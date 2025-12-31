@@ -1,0 +1,57 @@
+{
+  "version": 3,
+  "models": [
+    {
+      "name": "ocr_detection",
+      "type": "tflite",
+      "assetPath": "models/ocr_det_fp16.tflite",
+      "targetPath": "ocr_det_fp16.tflite",
+      "sha256": "f02bb7693e98dacd08075ac911dbdfdb0184b5f582cabb0c49ca41c5120fe189",
+      "sizeBytes": 2444316,
+      "required": true,
+      "description": "PP-OCRv5 text detection model (FP16)",
+      "source": "https://github.com/PaddlePaddle/PaddleOCR",
+      "inputShape": [
+        1,
+        640,
+        640,
+        3
+      ],
+      "quantization": "FP16"
+    },
+    {
+      "name": "ocr_recognition",
+      "type": "tflite",
+      "assetPath": "models/ocr_rec_fp16.tflite",
+      "targetPath": "ocr_rec_fp16.tflite",
+      "sha256": "559b9f822a19887bbf18a9607619406710c0aeec90577117fb620d5cf6e0a55d",
+      "sizeBytes": 8324208,
+      "required": true,
+      "description": "PP-OCRv5 text recognition model (FP16)",
+      "source": "https://github.com/PaddlePaddle/PaddleOCR",
+      "inputShape": [
+        1,
+        48,
+        320,
+        3
+      ],
+      "outputShape": [
+        1,
+        40,
+        18385
+      ],
+      "quantization": "FP16"
+    },
+    {
+      "name": "ocr_dictionary",
+      "type": "dictionary",
+      "assetPath": "models/keys_v5.txt",
+      "targetPath": "keys_v5.txt",
+      "sha256": "d1979e9f794c464c0d2e0b70a7fe14dd978e9dc644c0e71f14158cdf8342af1b",
+      "sizeBytes": 74012,
+      "required": true,
+      "description": "Character dictionary for CTC decoding (18383 chars)",
+      "source": "https://github.com/PaddlePaddle/PaddleOCR"
+    }
+  ]
+}

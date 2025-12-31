@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="app_name">PPOCRv5-Android</string>
+
+  <!-- Permission -->
+  <string name="permission_camera_title">需要相机权限</string>
+  <string name="permission_camera_rationale">此应用需要相机权限来进行实时OCR文字识别。您的相机画面完全在设备上处理，不会上传到任何服务器。</string>
+  <string name="permission_camera_denied_title">权限被拒绝</string>
+  <string name="permission_camera_denied_message">相机权限被拒绝。请在设置中启用相机权限以使用OCR功能。</string>
+  <string name="permission_camera_request_message">文字识别需要相机权限。</string>
+  <string name="permission_grant">授予权限</string>
+  <string name="permission_request">请求权限</string>
+
+  <!-- Common -->
+  <string name="common_retry">重试</string>
+  <string name="common_cancel">取消</string>
+  <string name="common_open_settings">打开设置</string>
+
+  <!-- Error -->
+  <string name="error_camera_permission_title">需要相机权限</string>
+  <string name="error_camera_permission_message">相机权限被拒绝。请在设置中启用相机权限以使用OCR功能。</string>
+  <string name="error_model_load_title">模型加载失败</string>
+  <string name="error_model_load_message">无法加载OCR模型。请检查模型文件是否存在并重试。</string>
+  <string name="error_accelerator_init_title">加速器初始化失败</string>
+  <string name="error_accelerator_init_message">无法初始化所选加速器。</string>
+  <string name="error_accelerator_init_fallback">无法初始化所选加速器。已回退到 %1$s。</string>
+
+  <!-- Benchmark -->
+  <string name="benchmark_fps">%1$s 帧/秒</string>
+  <string name="benchmark_fps_placeholder">-- 帧/秒</string>
+  <string name="benchmark_ms">%1$s 毫秒</string>
+  <string name="benchmark_ms_placeholder">-- 毫秒</string>
+  <string name="benchmark_detection">检测</string>
+  <string name="benchmark_recognition">识别</string>
+  <string name="benchmark_total">总计</string>
+  <string name="benchmark_toggle_details">切换详情</string>
+
+  <!-- Accelerator -->
+  <string name="accelerator_npu">NPU</string>
+  <string name="accelerator_gpu">GPU</string>
+  <string name="accelerator_cpu">CPU</string>
+
+  <!-- Resolution 4:3 -->
+  <string name="resolution_320x240">320×240</string>
+  <string name="resolution_640x480">640×480</string>
+  <string name="resolution_800x600">800×600</string>
+  <string name="resolution_1024x768">1024×768</string>
+  <string name="resolution_1280x960">1280×960</string>
+  <string name="resolution_1600x1200">1600×1200</string>
+  <string name="resolution_2048x1536">2048×1536</string>
+
+  <!-- Resolution 16:9 -->
+  <string name="resolution_320x180">320×180</string>
+  <string name="resolution_640x360">640×360</string>
+  <string name="resolution_854x480">854×480</string>
+  <string name="resolution_1280x720">1280×720</string>
+  <string name="resolution_1920x1080">1920×1080</string>
+  <string name="resolution_2560x1440">2560×1440</string>
+  <string name="resolution_3840x2160">3840×2160</string>
+
+  <!-- Resolution 1:1 -->
+  <string name="resolution_240x240">240×240</string>
+  <string name="resolution_480x480">480×480</string>
+  <string name="resolution_640x640">640×640</string>
+  <string name="resolution_720x720">720×720</string>
+  <string name="resolution_1080x1080">1080×1080</string>
+
+  <!-- Aspect Ratio -->
+  <string name="aspect_ratio_4_3">4:3</string>
+  <string name="aspect_ratio_16_9">16:9</string>
+  <string name="aspect_ratio_1_1">1:1</string>
+
+  <!-- Settings -->
+  <string name="settings_resolution">分辨率</string>
+  <string name="settings_accelerator">加速器</string>
+  <string name="settings_title">设置</string>
+  <string name="settings_aspect_ratio">宽高比</string>
+
+  <!-- Camera Controls -->
+  <string name="camera_settings">设置</string>
+  <string name="camera_capture">拍摄</string>
+  <string name="camera_freeze">暂停</string>
+  <string name="camera_resume">继续</string>
+  <string name="camera_switch">切换镜头</string>
+  <string name="camera_flash">闪光灯</string>
+  <string name="camera_flash_on">闪光灯开启</string>
+  <string name="camera_flash_off">闪光灯关闭</string>
+
+  <!-- Navigation -->
+  <string name="nav_camera">相机</string>
+  <string name="nav_gallery">相册</string>
+  <string name="nav_about">关于</string>
+
+  <!-- Gallery -->
+  <string name="gallery_title">相册</string>
+  <string name="gallery_import">导入</string>
+  <string name="gallery_empty">暂无图片</string>
+  <string name="gallery_empty_hint">点击下方按钮导入图片</string>
+  <string name="gallery_delete_title">删除图片</string>
+  <string name="gallery_delete_message">确定要删除这张图片吗？</string>
+  <string name="gallery_delete_confirm">删除</string>
+  <string name="gallery_selected_count">已选择 %1$d 项</string>
+  <string name="gallery_select_all">全选</string>
+  <string name="gallery_deselect_all">取消全选</string>
+  <string name="gallery_delete_selected_title">删除所选</string>
+  <string name="gallery_delete_selected_message">确定要删除 %1$d 张图片吗？</string>
+
+  <!-- Image Viewer -->
+  <string name="image_viewer_back">返回</string>
+  <string name="image_viewer_text_detected">检测到文字</string>
+  <string name="image_viewer_copy_text">复制文字</string>
+  <string name="image_viewer_copy_all">复制全部文字</string>
+  <string name="image_viewer_text_copied">文字已复制</string>
+
+  <!-- About -->
+  <string name="about_title">关于</string>
+  <string name="about_version">版本 %1$s</string>
+  <string name="about_project">项目</string>
+  <string name="about_github">GitHub 仓库</string>
+  <string name="about_author">作者</string>
+  <string name="about_author_website">个人网站</string>
+  <string name="about_author_github">GitHub</string>
+  <string name="about_license">许可证</string>
+  <string name="about_license_name">Apache License 2.0</string>
+  <string name="about_acknowledgements">致谢</string>
+</resources>

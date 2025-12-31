@@ -1,0 +1,125 @@
+<resources>
+  <string name="app_name">PPOCRv5-Android</string>
+
+  <!-- Permission -->
+  <string name="permission_camera_title">Camera Permission Required</string>
+  <string name="permission_camera_rationale">This app needs camera access to perform real-time OCR text recognition. Your camera feed is processed entirely on-device and is never uploaded.</string>
+  <string name="permission_camera_denied_title">Permission Denied</string>
+  <string name="permission_camera_denied_message">Camera permission was denied. Please enable it in Settings to use OCR features.</string>
+  <string name="permission_camera_request_message">Camera permission is required for text recognition.</string>
+  <string name="permission_grant">Grant Permission</string>
+  <string name="permission_request">Request Permission</string>
+
+  <!-- Common -->
+  <string name="common_retry">Retry</string>
+  <string name="common_cancel">Cancel</string>
+  <string name="common_open_settings">Open Settings</string>
+
+  <!-- Error -->
+  <string name="error_camera_permission_title">Camera Permission Required</string>
+  <string name="error_camera_permission_message">Camera permission was denied. Please enable it in Settings to use OCR features.</string>
+  <string name="error_model_load_title">Model Load Failed</string>
+  <string name="error_model_load_message">Failed to load OCR models. Please check that the model files are present and try again.</string>
+  <string name="error_accelerator_init_title">Accelerator Initialization Failed</string>
+  <string name="error_accelerator_init_message">Failed to initialize the selected accelerator.</string>
+  <string name="error_accelerator_init_fallback">Failed to initialize the selected accelerator. Falling back to %1$s.</string>
+
+  <!-- Benchmark -->
+  <string name="benchmark_fps">%1$s FPS</string>
+  <string name="benchmark_fps_placeholder">-- FPS</string>
+  <string name="benchmark_ms">%1$s ms</string>
+  <string name="benchmark_ms_placeholder">-- ms</string>
+  <string name="benchmark_detection">Detection</string>
+  <string name="benchmark_recognition">Recognition</string>
+  <string name="benchmark_total">Total</string>
+  <string name="benchmark_toggle_details">Toggle details</string>
+
+  <!-- Accelerator -->
+  <string name="accelerator_npu">NPU</string>
+  <string name="accelerator_gpu">GPU</string>
+  <string name="accelerator_cpu">CPU</string>
+
+  <!-- Resolution 4:3 -->
+  <string name="resolution_320x240">320×240</string>
+  <string name="resolution_640x480">640×480</string>
+  <string name="resolution_800x600">800×600</string>
+  <string name="resolution_1024x768">1024×768</string>
+  <string name="resolution_1280x960">1280×960</string>
+  <string name="resolution_1600x1200">1600×1200</string>
+  <string name="resolution_2048x1536">2048×1536</string>
+
+  <!-- Resolution 16:9 -->
+  <string name="resolution_320x180">320×180</string>
+  <string name="resolution_640x360">640×360</string>
+  <string name="resolution_854x480">854×480</string>
+  <string name="resolution_1280x720">1280×720</string>
+  <string name="resolution_1920x1080">1920×1080</string>
+  <string name="resolution_2560x1440">2560×1440</string>
+  <string name="resolution_3840x2160">3840×2160</string>
+
+  <!-- Resolution 1:1 -->
+  <string name="resolution_240x240">240×240</string>
+  <string name="resolution_480x480">480×480</string>
+  <string name="resolution_640x640">640×640</string>
+  <string name="resolution_720x720">720×720</string>
+  <string name="resolution_1080x1080">1080×1080</string>
+
+  <!-- Aspect Ratio -->
+  <string name="aspect_ratio_4_3">4:3</string>
+  <string name="aspect_ratio_16_9">16:9</string>
+  <string name="aspect_ratio_1_1">1:1</string>
+
+  <!-- Settings -->
+  <string name="settings_resolution">Resolution</string>
+  <string name="settings_accelerator">Accelerator</string>
+  <string name="settings_title">Settings</string>
+  <string name="settings_aspect_ratio">Aspect Ratio</string>
+
+  <!-- Camera Controls -->
+  <string name="camera_settings">Settings</string>
+  <string name="camera_capture">Capture</string>
+  <string name="camera_freeze">Freeze</string>
+  <string name="camera_resume">Resume</string>
+  <string name="camera_switch">Switch Camera</string>
+  <string name="camera_flash">Flash</string>
+  <string name="camera_flash_on">Flash On</string>
+  <string name="camera_flash_off">Flash Off</string>
+
+  <!-- Navigation -->
+  <string name="nav_camera">Camera</string>
+  <string name="nav_gallery">Gallery</string>
+  <string name="nav_about">About</string>
+
+  <!-- Gallery -->
+  <string name="gallery_title">Gallery</string>
+  <string name="gallery_import">Import</string>
+  <string name="gallery_empty">No images yet</string>
+  <string name="gallery_empty_hint">Tap the button below to import images</string>
+  <string name="gallery_delete_title">Delete Image</string>
+  <string name="gallery_delete_message">Are you sure you want to delete this image?</string>
+  <string name="gallery_delete_confirm">Delete</string>
+  <string name="gallery_selected_count">%1$d selected</string>
+  <string name="gallery_select_all">Select all</string>
+  <string name="gallery_deselect_all">Deselect all</string>
+  <string name="gallery_delete_selected_title">Delete Selected</string>
+  <string name="gallery_delete_selected_message">Are you sure you want to delete %1$d images?</string>
+
+  <!-- Image Viewer -->
+  <string name="image_viewer_back">Back</string>
+  <string name="image_viewer_text_detected">Text detected</string>
+  <string name="image_viewer_copy_text">Copy text</string>
+  <string name="image_viewer_copy_all">Copy all text</string>
+  <string name="image_viewer_text_copied">Text copied</string>
+
+  <!-- About -->
+  <string name="about_title">About</string>
+  <string name="about_version">Version %1$s</string>
+  <string name="about_project">Project</string>
+  <string name="about_github">GitHub Repository</string>
+  <string name="about_author">Author</string>
+  <string name="about_author_website">Website</string>
+  <string name="about_author_github">GitHub</string>
+  <string name="about_license">License</string>
+  <string name="about_license_name">Apache License 2.0</string>
+  <string name="about_acknowledgements">Acknowledgements</string>
+</resources>
