@@ -68,7 +68,7 @@ graph TB
 # Debug 构建
 ./gradlew assembleDebug
 
-# Release 构建（混淆、优化)
+# Release 构建（混淆、优化）
 ./gradlew assembleRelease
 
 # 运行单元测试
@@ -141,7 +141,7 @@ graph LR
     C -->|onnx2tf| D[TFLite FP16]
 ```
 
-### 自动转换（GitHub Actions)
+### 自动转换（GitHub Actions）
 
 当 `app/src/main/assets/models/manifest.json` 被修改时自动触发工作流，也可通过 `workflow_dispatch` 手动触发。
 
@@ -188,7 +188,7 @@ paddle2onnx --model_dir models_tmp/rec \
 ONNX 模型需要修改以兼容 LiteRT GPU delegate:
 
 1. 使用 `onnxsim` 简化并固定输入形状
-2. 将 `HardSigmoid` 分解为基础算子（Mul, Add, Max, Min)
+2. 将 `HardSigmoid` 分解为基础算子（Mul, Add, Max, Min）
 3. 将 `Resize` 的 coordinate_transformation_mode 从 `half_pixel` 改为 `asymmetric`
 
 完整修复脚本见 `.github/workflows/convert-models.yml`。
@@ -218,28 +218,28 @@ wget https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/d
 
 转换过程确保与 LiteRT GPU delegate 兼容:
 
-- 静态输入形状（GPU 加速必需)
-- 无不支持的算子（HardSigmoid 已分解)
-- 非对称 resize 模式（更好的 GPU 支持)
-- FP16 量化（移动端 GPU 最优)
+- 静态输入形状（GPU 加速必需）
+- 无不支持的算子（HardSigmoid 已分解）
+- 非对称 resize 模式（更好的 GPU 支持）
+- FP16 量化（移动端 GPU 最优）
 
 ## OCR 流程
 
-### 检测（DBNet)
+### 检测（DBNet）
 
 1. 将输入图像缩放至 640x640，保持宽高比
 2. 使用 ImageNet 统计值归一化:
    - Mean: [0.485, 0.456, 0.406]
    - Std: [0.229, 0.224, 0.225]
 3. 推理生成概率图
-4. 阈值二值化（阈值: 0.3)
+4. 阈值二值化（阈值: 0.3）
 5. 轮廓检测与最小外接矩形提取
 6. 按置信度（>0.5）和面积过滤检测框
 
-### 识别（SVTRv2)
+### 识别（SVTRv2）
 
 1. 从原图裁剪并旋转文字区域
-2. 缩放至高度 48，宽度可变（最大 320)
+2. 缩放至高度 48，宽度可变（最大 320）
 3. 归一化:
    - Mean: [0.5, 0.5, 0.5]
    - Std: [0.5, 0.5, 0.5]
@@ -265,7 +265,7 @@ Native 层使用 C++17 和 LiteRT C++ API 实现。核心组件:
 - `OcrEngine`: 协调检测与识别流程
 - `TextDetector`: DBNet 推理与后处理
 - `TextRecognizer`: SVTRv2 推理与 CTC 解码
-- `ImageUtils`: 缩放、归一化、裁剪操作（NEON 优化)
+- `ImageUtils`: 缩放、归一化、裁剪操作（NEON 优化）
 - `Postprocess`: 轮廓检测、旋转矩形提取
 
 Release 构建优化:
