@@ -417,7 +417,7 @@ jobs:
             -O app/src/main/assets/models/keys_v5.txt
 
       - name: Upload models
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ppocrv5-tflite-models-gpu
           path: |
