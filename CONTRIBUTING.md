@@ -74,6 +74,15 @@ By submitting code to this project (including Pull Requests), you agree that you
 
 To maintain a clean codebase and respect intellectual property, please follow these guidelines for copyright headers:
 
+#### Copyright Year Policy
+
+Do not mass-update copyright headers just because the calendar year changed.
+
+- Keep the original year for files that were created in that year and only received minor maintenance later.
+- Use a year range such as `2025-2026` when a file created in an earlier year receives substantive maintenance in a later year.
+- Use the current year for newly created files.
+- Avoid repository-wide copyright-only churn. Update headers only for files that are already being changed for substantive reasons.
+
 #### Modifying Existing Files
 
 If the file header lists three or fewer authors (including yourself):
@@ -99,7 +108,7 @@ For completely original code:
 Add your name with the project's standard license header.
 
 ```
-// Copyright (C) 2025 [Your Name]
+// Copyright (C) 2026 [Your Name]
 ```
 
 For files containing third-party or copyrighted content:
