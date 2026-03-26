@@ -171,11 +171,10 @@ fun CameraSettingsContent(
   }
 }
 
-@Suppress("DEPRECATION")
 @Composable
 private fun getAcceleratorDisplayName(type: AcceleratorType): String {
-  return when (type) {
-    AcceleratorType.CPU -> stringResource(R.string.accelerator_cpu)
+  return when (type.value) {
+    AcceleratorType.CPU.value -> stringResource(R.string.accelerator_cpu)
     else -> stringResource(R.string.accelerator_gpu)
   }
 }

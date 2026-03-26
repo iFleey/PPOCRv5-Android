@@ -305,6 +305,74 @@ namespace ppocrv5::image_utils {
         }
     }
 
+    void LetterboxResizeNormalizeImageNet(const uint8_t *src, int src_w, int src_h, int src_stride,
+                                          float *dst, int dst_w, int dst_h, LetterboxInfo *info,
+                                          uint8_t pad_value) {
+        const float scale = std::min(
+                static_cast<float>(dst_w) / std::max(src_w, 1),
+                static_cast<float>(dst_h) / std::max(src_h, 1));
+
+        const int resized_w = std::max(1, static_cast<int>(std::round(src_w * scale)));
+        const int resized_h = std::max(1, static_cast<int>(std::round(src_h * scale)));
+        const int pad_x = (dst_w - resized_w) / 2;
+        const int pad_y = (dst_h - resized_h) / 2;
+
+        const float pad_r = (pad_value - kDetMean[0]) * kDetStd[0];
+        const float pad_g = (pad_value - kDetMean[1]) * kDetStd[1];
+        const float pad_b = (pad_value - kDetMean[2]) * kDetStd[2];
+
+        for (int y = 0; y < dst_h; ++y) {
+            float *dst_row = dst + static_cast<size_t>(y) * dst_w * 3;
+            for (int x = 0; x < dst_w; ++x) {
+                const int di = x * 3;
+                dst_row[di + 0] = pad_r;
+                dst_row[di + 1] = pad_g;
+                dst_row[di + 2] = pad_b;
+            }
+        }
+
+        const float scale_x = static_cast<float>(src_w) / resized_w;
+        const float scale_y = static_cast<float>(src_h) / resized_h;
+
+        for (int y = 0; y < resized_h; ++y) {
+            const float src_y = Clamp((y + 0.5f) * scale_y - 0.5f, 0.f, src_h - 1.f);
+            const int y0 = static_cast<int>(src_y);
+            const int y1 = std::min(y0 + 1, src_h - 1);
+            const float dy = src_y - y0;
+
+            const uint8_t *row0 = src + y0 * src_stride;
+            const uint8_t *row1 = src + y1 * src_stride;
+            float *dst_row = dst + (static_cast<size_t>(y + pad_y) * dst_w + pad_x) * 3;
+
+            for (int x = 0; x < resized_w; ++x) {
+                const float src_x = Clamp((x + 0.5f) * scale_x - 0.5f, 0.f, src_w - 1.f);
+                const int x0 = static_cast<int>(src_x);
+                const int x1 = std::min(x0 + 1, src_w - 1);
+                const float dx = src_x - x0;
+
+                const float w00 = (1.0f - dx) * (1.0f - dy);
+                const float w01 = dx * (1.0f - dy);
+                const float w10 = (1.0f - dx) * dy;
+                const float w11 = dx * dy;
+
+                const int dst_index = x * 3;
+                for (int c = 0; c < 3; ++c) {
+                    const float value = row0[x0 * 4 + c] * w00 + row0[x1 * 4 + c] * w01 +
+                                        row1[x0 * 4 + c] * w10 + row1[x1 * 4 + c] * w11;
+                    dst_row[dst_index + c] = (value - kDetMean[c]) * kDetStd[c];
+                }
+            }
+        }
+
+        if (info != nullptr) {
+            info->scale = scale;
+            info->resized_w = resized_w;
+            info->resized_h = resized_h;
+            info->pad_x = pad_x;
+            info->pad_y = pad_y;
+        }
+    }
+
     void NormalizeImageNet(const uint8_t *src, int w, int h, int stride, float *dst) {
         for (int y = 0; y < h; ++y) {
             const uint8_t *row = src + y * stride;

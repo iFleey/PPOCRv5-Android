@@ -43,6 +43,9 @@ namespace ppocrv5 {
         constexpr int kTinyImageShortSideThreshold = 64;
         constexpr int kTinyImageMinProcessingShortSide = 96;
         constexpr int kTinyImageMaxUpscaleFactor = 4;
+        constexpr int kRecInputHeight = 48;
+        constexpr int kRecInputWidth = 320;
+        constexpr int kRecognitionWidthBucket = 32;
 
         int GetFallbackStartIndex(AcceleratorType requested) {
             switch (requested) {
@@ -122,20 +125,20 @@ namespace ppocrv5 {
             return center_dx <= width * 0.1f && center_dy <= height * 0.1f;
         }
 
-        std::vector<uint8_t> UpscaleImageRgba(const uint8_t *image_data,
-                                              int width, int height, int stride,
-                                              int factor,
-                                              int *out_width, int *out_height, int *out_stride) {
+        void UpscaleImageRgba(const uint8_t *image_data,
+                             int width, int height, int stride,
+                             int factor,
+                             std::vector<uint8_t> *buffer,
+                             int *out_width, int *out_height, int *out_stride) {
             const int scaled_width = width * factor;
             const int scaled_height = height * factor;
-            std::vector<uint8_t> scaled(static_cast<size_t>(scaled_width) * scaled_height * 4);
+            buffer->resize(static_cast<size_t>(scaled_width) * scaled_height * 4);
             image_utils::ResizeBilinear(
                     image_data, width, height, stride,
-                    scaled.data(), scaled_width, scaled_height);
+                    buffer->data(), scaled_width, scaled_height);
             *out_width = scaled_width;
             *out_height = scaled_height;
             *out_stride = scaled_width * 4;
-            return scaled;
         }
 
         RotatedRect MakeFullImageBox(int width, int height) {
@@ -156,6 +159,42 @@ namespace ppocrv5 {
                 box.width *= scale_factor;
                 box.height *= scale_factor;
             }
+        }
+
+        int EstimateRecognitionTargetWidth(const RotatedRect &box) {
+            float src_width = box.width;
+            float src_height = box.height;
+            if (src_width < src_height) {
+                std::swap(src_width, src_height);
+            }
+
+            const float aspect_ratio = src_width / std::max(src_height, 1.0f);
+            return std::clamp(static_cast<int>(kRecInputHeight * aspect_ratio), 1, kRecInputWidth);
+        }
+
+        void BucketRecognitionOrder(const std::vector<RotatedRect> &boxes,
+                                    std::vector<size_t> &indices) {
+            std::stable_sort(indices.begin(), indices.end(),
+                             [&boxes](size_t a, size_t b) {
+                                 const int width_a = EstimateRecognitionTargetWidth(boxes[a]);
+                                 const int width_b = EstimateRecognitionTargetWidth(boxes[b]);
+                                 const int bucket_a = width_a / kRecognitionWidthBucket;
+                                 const int bucket_b = width_b / kRecognitionWidthBucket;
+                                 if (bucket_a != bucket_b) {
+                                     return bucket_a < bucket_b;
+                                 }
+                                 return width_a < width_b;
+                             });
+        }
+
+        void SortResultsByReadingOrder(std::vector<OcrResult> &results) {
+            std::sort(results.begin(), results.end(), [](const OcrResult &a, const OcrResult &b) {
+                constexpr float kLineThreshold = 20.0f;
+                if (std::abs(a.box.center_y - b.box.center_y) < kLineThreshold) {
+                    return a.box.center_x < b.box.center_x;
+                }
+                return a.box.center_y < b.box.center_y;
+            });
         }
 
     }  // namespace
@@ -203,11 +242,13 @@ namespace ppocrv5 {
         return nullptr;
     }
 
-    std::vector<OcrResult> OcrEngine::Process(const uint8_t *image_data,
-                                              int width, int height, int stride) {
+    const std::vector<OcrResult> &OcrEngine::ProcessView(const uint8_t *image_data,
+                                                         int width, int height, int stride) {
+        results_buffer_.clear();
+
         if (!detector_ || !recognizer_) {
             LOGE(TAG, "OcrEngine not properly initialized");
-            return {};
+            return results_buffer_;
         }
 
         auto total_start = std::chrono::high_resolution_clock::now();
@@ -217,7 +258,6 @@ namespace ppocrv5 {
         int processing_height = height;
         int processing_stride = stride;
         float processing_to_original_scale = 1.0f;
-        std::vector<uint8_t> upscaled_image;
         const bool use_tiny_image_path = ShouldUseTinyImagePath(width, height);
 
         RecognitionResult direct_recognition_result;
@@ -227,10 +267,11 @@ namespace ppocrv5 {
         if (use_tiny_image_path) {
             const int upscale_factor = ComputeTinyImageUpscaleFactor(width, height);
             if (upscale_factor > 1) {
-                upscaled_image = UpscaleImageRgba(
+                UpscaleImageRgba(
                         image_data, width, height, stride, upscale_factor,
+                        &upscale_buffer_,
                         &processing_width, &processing_height, &processing_stride);
-                processing_image_data = upscaled_image.data();
+                processing_image_data = upscale_buffer_.data();
                 processing_to_original_scale = 1.0f / upscale_factor;
             }
 
@@ -249,27 +290,24 @@ namespace ppocrv5 {
                 result.text = std::move(direct_recognition_result.text);
                 result.confidence = direct_recognition_result.confidence;
                 result.box = MakeFullImageBox(width, height);
+                results_buffer_.push_back(std::move(result));
 
                 benchmark_.detection_time_ms = 0.0f;
                 benchmark_.recognition_time_ms = direct_recognition_time_ms;
                 benchmark_.total_time_ms = direct_recognition_time_ms;
                 benchmark_.fps = (benchmark_.total_time_ms > 0.0f) ? (1000.0f / benchmark_.total_time_ms) : 0.0f;
-                return {std::move(result)};
+                return results_buffer_;
             }
         }
 
         float detection_time_ms = 0.0f;
-        auto boxes = detector_->Detect(
+        const auto &boxes = detector_->DetectView(
                 processing_image_data,
                 processing_width,
                 processing_height,
                 processing_stride,
                 &detection_time_ms);
         benchmark_.detection_time_ms = detection_time_ms;
-
-        if (processing_to_original_scale != 1.0f) {
-            ScaleBoxes(boxes, processing_to_original_scale);
-        }
 
         if (boxes.empty()) {
             if (has_direct_recognition_candidate &&
@@ -278,13 +316,14 @@ namespace ppocrv5 {
                 result.text = std::move(direct_recognition_result.text);
                 result.confidence = direct_recognition_result.confidence;
                 result.box = MakeFullImageBox(width, height);
+                results_buffer_.push_back(std::move(result));
 
                 auto total_end = std::chrono::high_resolution_clock::now();
                 benchmark_.recognition_time_ms = direct_recognition_time_ms;
                 benchmark_.total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(
                         total_end - total_start).count() / 1000.0f;
                 benchmark_.fps = (benchmark_.total_time_ms > 0.0f) ? (1000.0f / benchmark_.total_time_ms) : 0.0f;
-                return {std::move(result)};
+                return results_buffer_;
             }
 
             auto total_end = std::chrono::high_resolution_clock::now();
@@ -292,33 +331,42 @@ namespace ppocrv5 {
                     total_end - total_start).count() / 1000.0f;
             benchmark_.recognition_time_ms = 0.0f;
             benchmark_.fps = (benchmark_.total_time_ms > 0.0f) ? (1000.0f / benchmark_.total_time_ms) : 0.0f;
-            return {};
+            return results_buffer_;
         }
 
-        std::vector<RotatedRect> filtered_boxes;
-        filtered_boxes.reserve(boxes.size());
+        filtered_boxes_buffer_.clear();
+        filtered_boxes_buffer_.reserve(boxes.size());
         const float min_box_area = use_tiny_image_path ? 16.0f : kMinBoxArea;
 
         for (const auto &box: boxes) {
-            if (box.width * box.height >= min_box_area) {
-                filtered_boxes.push_back(box);
+            RotatedRect scaled_box = box;
+            if (processing_to_original_scale != 1.0f) {
+                scaled_box.center_x *= processing_to_original_scale;
+                scaled_box.center_y *= processing_to_original_scale;
+                scaled_box.width *= processing_to_original_scale;
+                scaled_box.height *= processing_to_original_scale;
+            }
+
+            if (scaled_box.width * scaled_box.height >= min_box_area) {
+                filtered_boxes_buffer_.push_back(scaled_box);
             }
         }
 
-        if (filtered_boxes.empty()) {
+        if (filtered_boxes_buffer_.empty()) {
             if (has_direct_recognition_candidate &&
                 direct_recognition_result.confidence >= kTinyImageFallbackRecognitionThreshold) {
                 OcrResult result;
                 result.text = std::move(direct_recognition_result.text);
                 result.confidence = direct_recognition_result.confidence;
                 result.box = MakeFullImageBox(width, height);
+                results_buffer_.push_back(std::move(result));
 
                 auto total_end = std::chrono::high_resolution_clock::now();
                 benchmark_.recognition_time_ms = direct_recognition_time_ms;
                 benchmark_.total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(
                         total_end - total_start).count() / 1000.0f;
                 benchmark_.fps = (benchmark_.total_time_ms > 0.0f) ? (1000.0f / benchmark_.total_time_ms) : 0.0f;
-                return {std::move(result)};
+                return results_buffer_;
             }
 
             auto total_end = std::chrono::high_resolution_clock::now();
@@ -326,37 +374,38 @@ namespace ppocrv5 {
                     total_end - total_start).count() / 1000.0f;
             benchmark_.recognition_time_ms = 0.0f;
             benchmark_.fps = (benchmark_.total_time_ms > 0.0f) ? (1000.0f / benchmark_.total_time_ms) : 0.0f;
-            return {};
+            return results_buffer_;
         }
 
-        std::vector<size_t> sorted_indices;
-        SortTopBoxesByArea(filtered_boxes, sorted_indices, kMaxBoxesPerFrame);
+        SortTopBoxesByArea(filtered_boxes_buffer_, sorted_indices_buffer_, kMaxBoxesPerFrame);
+        recognition_order_buffer_ = sorted_indices_buffer_;
+        BucketRecognitionOrder(filtered_boxes_buffer_, recognition_order_buffer_);
 
         if (use_tiny_image_path &&
             has_direct_recognition_candidate &&
             direct_recognition_result.confidence >= kTinyImageFallbackRecognitionThreshold &&
-            sorted_indices.size() == 1 &&
-            IsEffectivelyFullImageBox(filtered_boxes[sorted_indices.front()], width, height)) {
+            sorted_indices_buffer_.size() == 1 &&
+            IsEffectivelyFullImageBox(filtered_boxes_buffer_[sorted_indices_buffer_.front()], width, height)) {
             OcrResult result;
             result.text = std::move(direct_recognition_result.text);
             result.confidence = direct_recognition_result.confidence;
-            result.box = filtered_boxes[sorted_indices.front()];
+            result.box = filtered_boxes_buffer_[sorted_indices_buffer_.front()];
+            results_buffer_.push_back(std::move(result));
 
             auto total_end = std::chrono::high_resolution_clock::now();
             benchmark_.recognition_time_ms = direct_recognition_time_ms;
             benchmark_.total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(
                     total_end - total_start).count() / 1000.0f;
             benchmark_.fps = (benchmark_.total_time_ms > 0.0f) ? (1000.0f / benchmark_.total_time_ms) : 0.0f;
-            return {std::move(result)};
+            return results_buffer_;
         }
 
-        std::vector<OcrResult> results;
-        results.reserve(sorted_indices.size());
+        results_buffer_.reserve(recognition_order_buffer_.size());
 
         auto rec_start = std::chrono::high_resolution_clock::now();
 
-        for (size_t idx: sorted_indices) {
-            const auto &box = filtered_boxes[idx];
+        for (size_t idx: recognition_order_buffer_) {
+            const auto &box = filtered_boxes_buffer_[idx];
             float rec_time_ms = 0.0f;
             RotatedRect recognition_box = box;
             if (processing_to_original_scale != 1.0f) {
@@ -378,7 +427,7 @@ namespace ppocrv5 {
                 result.text = std::move(rec_result.text);
                 result.confidence = rec_result.confidence;
                 result.box = box;
-                results.push_back(std::move(result));
+                results_buffer_.push_back(std::move(result));
             }
         }
 
@@ -390,14 +439,22 @@ namespace ppocrv5 {
         benchmark_.total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(
                 total_end - total_start).count() / 1000.0f;
         benchmark_.fps = (benchmark_.total_time_ms > 0.0f) ? (1000.0f / benchmark_.total_time_ms) : 0.0f;
+        SortResultsByReadingOrder(results_buffer_);
 
         LOGD(TAG, "OCR: %zu/%zu results, det=%.1fms, rec=%.1fms (%.1fms/box), total=%.1fms",
-             results.size(), filtered_boxes.size(),
+             results_buffer_.size(), filtered_boxes_buffer_.size(),
              benchmark_.detection_time_ms, benchmark_.recognition_time_ms,
-             filtered_boxes.size() > 0 ? benchmark_.recognition_time_ms / filtered_boxes.size() : 0.0f,
+             filtered_boxes_buffer_.size() > 0
+             ? benchmark_.recognition_time_ms / filtered_boxes_buffer_.size()
+             : 0.0f,
              benchmark_.total_time_ms);
 
-        return results;
+        return results_buffer_;
+    }
+
+    std::vector<OcrResult> OcrEngine::Process(const uint8_t *image_data,
+                                              int width, int height, int stride) {
+        return ProcessView(image_data, width, height, stride);
     }
 
     Benchmark OcrEngine::GetBenchmark() const {

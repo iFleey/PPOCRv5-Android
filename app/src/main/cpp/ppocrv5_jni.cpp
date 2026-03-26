@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 Fleey
+ * Copyright (C) 2025-2026 Fleey
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -64,26 +64,13 @@ namespace {
         }
     }
 
-    jobject create_ocr_result_object(JNIEnv *env, const ppocrv5::OcrResult &result) {
-        jclass ocr_result_class = env->FindClass("me/fleey/ppocrv5/ocr/OcrResult");
-        if (ocr_result_class == nullptr) {
-            LOGE(TAG, "Failed to find OcrResult class");
-            return nullptr;
-        }
-
-        jmethodID constructor = env->GetMethodID(
-                ocr_result_class, "<init>",
-                "(Ljava/lang/String;FFFFFF)V");
-        if (constructor == nullptr) {
-            LOGE(TAG, "Failed to find OcrResult constructor");
-            env->DeleteLocalRef(ocr_result_class);
-            return nullptr;
-        }
-
+    jobject create_ocr_result_object(JNIEnv *env,
+                                     jclass ocr_result_class,
+                                     jmethodID constructor,
+                                     const ppocrv5::OcrResult &result) {
         jstring text = env->NewStringUTF(result.text.c_str());
         if (text == nullptr) {
             LOGE(TAG, "Failed to create text string");
-            env->DeleteLocalRef(ocr_result_class);
             return nullptr;
         }
 
@@ -96,10 +83,7 @@ namespace {
                 result.box.width,
                 result.box.height,
                 result.box.angle);
-
         env->DeleteLocalRef(text);
-        env->DeleteLocalRef(ocr_result_class);
-
         return obj;
     }
 
@@ -198,7 +182,7 @@ Java_me_fleey_ppocrv5_ocr_OcrEngine_nativeProcess(
         return nullptr;
     }
 
-    auto results = engine->Process(
+    const auto &results = engine->ProcessView(
             static_cast<const uint8_t *>(pixels),
             static_cast<int>(bitmap_info.width),
             static_cast<int>(bitmap_info.height),
@@ -209,6 +193,15 @@ Java_me_fleey_ppocrv5_ocr_OcrEngine_nativeProcess(
     jclass ocr_result_class = env->FindClass("me/fleey/ppocrv5/ocr/OcrResult");
     if (ocr_result_class == nullptr) {
         LOGE(TAG, "Failed to find OcrResult class for array creation");
+        return nullptr;
+    }
+
+    jmethodID constructor = env->GetMethodID(
+            ocr_result_class, "<init>",
+            "(Ljava/lang/String;FFFFFF)V");
+    if (constructor == nullptr) {
+        LOGE(TAG, "Failed to find OcrResult constructor");
+        env->DeleteLocalRef(ocr_result_class);
         return nullptr;
     }
 
@@ -224,7 +217,7 @@ Java_me_fleey_ppocrv5_ocr_OcrEngine_nativeProcess(
     }
 
     for (size_t i = 0; i < results.size(); ++i) {
-        jobject result_obj = create_ocr_result_object(env, results[i]);
+        jobject result_obj = create_ocr_result_object(env, ocr_result_class, constructor, results[i]);
         if (result_obj != nullptr) {
             env->SetObjectArrayElement(result_array, static_cast<jsize>(i), result_obj);
             env->DeleteLocalRef(result_obj);

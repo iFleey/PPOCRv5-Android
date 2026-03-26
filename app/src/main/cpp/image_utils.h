@@ -36,6 +36,10 @@ namespace ppocrv5::image_utils {
                          uint8_t *dst, int dst_w, int dst_h, LetterboxInfo *info,
                          uint8_t pad_value = 114);
 
+    void LetterboxResizeNormalizeImageNet(const uint8_t *src, int src_w, int src_h, int src_stride,
+                                          float *dst, int dst_w, int dst_h, LetterboxInfo *info,
+                                          uint8_t pad_value = 114);
+
     void NormalizeImageNet(const uint8_t *src, int w, int h, int stride, float *dst);
 
     void NormalizeRecognition(const uint8_t *src, int w, int h, int stride, float *dst);

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 Fleey
+ * Copyright (C) 2025-2026 Fleey
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,6 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
-#include <queue>
 #include <utility>
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
@@ -72,36 +71,38 @@ namespace ppocrv5::postprocess {
             return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
         }
 
-        std::vector<Point> convex_hull(std::vector<Point> points) {
-            size_t n = points.size();
-            if (n < 3) return points;
+        void convex_hull(std::vector<Point> *points, std::vector<Point> *hull) {
+            size_t n = points->size();
+            if (n < 3) {
+                *hull = *points;
+                return;
+            }
 
-            std::sort(points.begin(), points.end(), [](const Point &a, const Point &b) {
+            std::sort(points->begin(), points->end(), [](const Point &a, const Point &b) {
                 return a.x < b.x || (a.x == b.x && a.y < b.y);
             });
 
-            std::vector<Point> hull;
-            hull.reserve(2 * n);
+            hull->clear();
+            hull->reserve(2 * n);
 
             for (size_t i = 0; i < n; ++i) {
-                while (hull.size() >= 2 &&
-                       cross_product(hull[hull.size() - 2], hull[hull.size() - 1], points[i]) <= 0) {
-                    hull.pop_back();
+                while (hull->size() >= 2 &&
+                       cross_product((*hull)[hull->size() - 2], (*hull)[hull->size() - 1], (*points)[i]) <= 0) {
+                    hull->pop_back();
                 }
-                hull.push_back(points[i]);
+                hull->push_back((*points)[i]);
             }
 
-            size_t lower_size = hull.size();
+            size_t lower_size = hull->size();
             for (size_t i = n - 1; i > 0; --i) {
-                while (hull.size() > lower_size &&
-                       cross_product(hull[hull.size() - 2], hull[hull.size() - 1], points[i - 1]) <= 0) {
-                    hull.pop_back();
+                while (hull->size() > lower_size &&
+                       cross_product((*hull)[hull->size() - 2], (*hull)[hull->size() - 1], (*points)[i - 1]) <= 0) {
+                    hull->pop_back();
                 }
-                hull.push_back(points[i - 1]);
+                hull->push_back((*points)[i - 1]);
             }
 
-            hull.pop_back();
-            return hull;
+            hull->pop_back();
         }
 
         float dot_product(float ax, float ay, float bx, float by) {
@@ -121,29 +122,23 @@ namespace ppocrv5::postprocess {
             }
         }
 
-        void compute_aabb(const std::vector<Point> &points,
-                          float &min_x, float &max_x, float &min_y, float &max_y) {
-            min_x = min_y = std::numeric_limits<float>::max();
-            max_x = max_y = std::numeric_limits<float>::lowest();
-            for (const auto &p: points) {
-                min_x = std::min(min_x, p.x);
-                max_x = std::max(max_x, p.x);
-                min_y = std::min(min_y, p.y);
-                max_y = std::max(max_y, p.y);
+        void subsample_points(const Point *points,
+                              int count,
+                              size_t max_points,
+                              std::vector<Point> *out) {
+            out->clear();
+
+            if (count <= static_cast<int>(max_points)) {
+                out->insert(out->end(), points, points + count);
+                return;
             }
-        }
 
-        std::vector<Point> subsample_points(const std::vector<Point> &points, size_t max_points) {
-            if (points.size() <= max_points) return points;
-
-            std::vector<Point> result;
-            result.reserve(max_points);
-            float step = static_cast<float>(points.size()) / max_points;
+            out->reserve(max_points);
+            float step = static_cast<float>(count) / static_cast<float>(max_points);
             for (size_t i = 0; i < max_points; ++i) {
                 size_t idx = static_cast<size_t>(i * step);
-                result.push_back(points[idx]);
+                out->push_back(points[idx]);
             }
-            return result;
         }
 
         void downsample_binary_map(const uint8_t *src, int src_w, int src_h,
@@ -217,60 +212,89 @@ namespace ppocrv5::postprocess {
 
     }  // namespace
 
-    std::vector<std::vector<Point>> FindContours(const uint8_t *binary_map,
-                                                 int width, int height) {
+    void FindContours(const uint8_t *binary_map,
+                      int width, int height,
+                      ContourScratch *scratch) {
         int ds_width = (width + kDownsampleFactor - 1) / kDownsampleFactor;
         int ds_height = (height + kDownsampleFactor - 1) / kDownsampleFactor;
 
-        std::vector<uint8_t> ds_map(ds_width * ds_height);
-        downsample_binary_map(binary_map, width, height, ds_map.data(), ds_width, ds_height, kDownsampleFactor);
+        const size_t ds_size = static_cast<size_t>(ds_width) * ds_height;
+        scratch->ds_map.resize(ds_size);
+        scratch->visit_marks.resize(ds_size);
+        if (++scratch->visit_token == 0) {
+            std::fill(scratch->visit_marks.begin(), scratch->visit_marks.end(), 0u);
+            scratch->visit_token = 1;
+        }
+        scratch->contour_points.clear();
+        scratch->contours.clear();
+        if (scratch->queue.capacity() < 256) {
+            scratch->queue.reserve(256);
+        }
 
-        std::vector<std::vector<Point>> contours;
-        std::vector<int> labels(ds_width * ds_height, 0);
+        downsample_binary_map(binary_map, width, height,
+                              scratch->ds_map.data(), ds_width, ds_height, kDownsampleFactor);
+
+        scratch->contours.reserve(kMaxContours);
         int current_label = 0;
 
         for (int y = 0; y < ds_height; ++y) {
             for (int x = 0; x < ds_width; ++x) {
-                if (pixel_at(ds_map.data(), x, y, ds_width) > 0 && labels[y * ds_width + x] == 0) {
+                if (pixel_at(scratch->ds_map.data(), x, y, ds_width) > 0 &&
+                    scratch->visit_marks[y * ds_width + x] != scratch->visit_token) {
                     current_label++;
-                    std::vector<Point> boundary;
                     int pixel_count = 0;
-                    std::queue<std::pair<int, int>> queue;
-                    queue.push({x, y});
-                    labels[y * ds_width + x] = current_label;
+                    const int contour_offset = static_cast<int>(scratch->contour_points.size());
+                    ContourRange contour;
+                    contour.offset = contour_offset;
+                    contour.min_x = std::numeric_limits<float>::max();
+                    contour.max_x = std::numeric_limits<float>::lowest();
+                    contour.min_y = std::numeric_limits<float>::max();
+                    contour.max_y = std::numeric_limits<float>::lowest();
 
-                    while (!queue.empty()) {
-                        auto [cx, cy] = queue.front();
-                        queue.pop();
+                    scratch->queue.clear();
+                    scratch->queue.push_back(y * ds_width + x);
+                    scratch->visit_marks[y * ds_width + x] = scratch->visit_token;
+                    size_t queue_head = 0;
+
+                    while (queue_head < scratch->queue.size()) {
+                        const int index = scratch->queue[queue_head++];
+                        const int cx = index % ds_width;
+                        const int cy = index / ds_width;
                         pixel_count++;
 
-                        if (is_boundary_pixel(ds_map.data(), cx, cy, ds_width, ds_height)) {
-                            boundary.push_back({
-                                                       static_cast<float>(cx * kDownsampleFactor +
-                                                                          kDownsampleFactor / 2),
-                                                       static_cast<float>(cy * kDownsampleFactor +
-                                                                          kDownsampleFactor / 2)
-                                               });
+                        if (is_boundary_pixel(scratch->ds_map.data(), cx, cy, ds_width, ds_height)) {
+                            const float point_x = static_cast<float>(
+                                    cx * kDownsampleFactor + kDownsampleFactor / 2);
+                            const float point_y = static_cast<float>(
+                                    cy * kDownsampleFactor + kDownsampleFactor / 2);
+                            scratch->contour_points.push_back({point_x, point_y});
+                            contour.min_x = std::min(contour.min_x, point_x);
+                            contour.max_x = std::max(contour.max_x, point_x);
+                            contour.min_y = std::min(contour.min_y, point_y);
+                            contour.max_y = std::max(contour.max_y, point_y);
+                            contour.size++;
                         }
 
                         for (int d = 0; d < 4; ++d) {
                             int nx = cx + kNeighborDx4[d];
                             int ny = cy + kNeighborDy4[d];
                             if (is_valid(nx, ny, ds_width, ds_height) &&
-                                pixel_at(ds_map.data(), nx, ny, ds_width) > 0 &&
-                                labels[ny * ds_width + nx] == 0) {
-                                labels[ny * ds_width + nx] = current_label;
-                                queue.push({nx, ny});
+                                pixel_at(scratch->ds_map.data(), nx, ny, ds_width) > 0 &&
+                                scratch->visit_marks[ny * ds_width + nx] != scratch->visit_token) {
+                                scratch->visit_marks[ny * ds_width + nx] = scratch->visit_token;
+                                scratch->queue.push_back(ny * ds_width + nx);
                             }
                         }
                     }
 
-                    if (pixel_count >= kMinComponentPixels && boundary.size() >= 4) {
-                        contours.push_back(std::move(boundary));
-                        if (contours.size() >= kMaxContours) {
+                    if (pixel_count >= kMinComponentPixels && contour.size >= 4) {
+                        scratch->contours.push_back(contour);
+                        if (scratch->contours.size() >= kMaxContours) {
                             LOGD(TAG, "FindContours: reached max contour limit (%d)", kMaxContours);
                             goto done;
                         }
+                    } else {
+                        scratch->contour_points.resize(contour_offset);
                     }
                 }
             }
@@ -278,29 +302,25 @@ namespace ppocrv5::postprocess {
         done:
 
         LOGD(TAG, "FindContours (optimized): found %d components, %zu valid contours",
-             current_label, contours.size());
-
-        return contours;
+             current_label, scratch->contours.size());
     }
 
-    RotatedRect MinAreaRect(const std::vector<Point> &contour) {
-        if (contour.size() < 3) {
+    RotatedRect MinAreaRect(const ContourRange &contour, ContourScratch *scratch) {
+        if (contour.size < 3) {
             return {};
         }
 
-        std::vector<Point> points = subsample_points(contour, kMaxBoundaryPoints);
+        const Point *contour_points = ContourData(*scratch, contour);
+        subsample_points(contour_points, contour.size, kMaxBoundaryPoints, &scratch->work_points);
 
-        float min_x, max_x, min_y, max_y;
-        compute_aabb(points, min_x, max_x, min_y, max_y);
-
-        float aabb_width = max_x - min_x;
-        float aabb_height = max_y - min_y;
+        const float aabb_width = contour.max_x - contour.min_x;
+        const float aabb_height = contour.max_y - contour.min_y;
 
         float aspect = std::max(aabb_width, aabb_height) / std::max(1.0f, std::min(aabb_width, aabb_height));
-        if (aspect > 2.0f && points.size() > 50) {
+        if (aspect > 2.0f && scratch->work_points.size() > 50) {
             RotatedRect rect;
-            rect.center_x = (min_x + max_x) / 2.0f;
-            rect.center_y = (min_y + max_y) / 2.0f;
+            rect.center_x = (contour.min_x + contour.max_x) / 2.0f;
+            rect.center_y = (contour.min_y + contour.max_y) / 2.0f;
             rect.width = aabb_width;
             rect.height = aabb_height;
             rect.angle = 0.0f;
@@ -312,20 +332,20 @@ namespace ppocrv5::postprocess {
             return rect;
         }
 
-        std::vector<Point> hull = convex_hull(std::vector<Point>(points));
-        if (hull.size() < 3) {
+        convex_hull(&scratch->work_points, &scratch->hull_points);
+        if (scratch->hull_points.size() < 3) {
             return {};
         }
 
         float min_area = std::numeric_limits<float>::max();
         RotatedRect best_rect;
 
-        size_t n = hull.size();
+        size_t n = scratch->hull_points.size();
         for (size_t i = 0; i < n; ++i) {
             size_t j = (i + 1) % n;
 
-            float edge_x = hull[j].x - hull[i].x;
-            float edge_y = hull[j].y - hull[i].y;
+            float edge_x = scratch->hull_points[j].x - scratch->hull_points[i].x;
+            float edge_y = scratch->hull_points[j].y - scratch->hull_points[i].y;
             float edge_len = std::sqrt(edge_x * edge_x + edge_y * edge_y);
 
             if (edge_len < 1e-6f) continue;
@@ -336,8 +356,8 @@ namespace ppocrv5::postprocess {
             float axis2_y = axis1_x;
 
             float min1, max1, min2, max2;
-            project_points_onto_axis(hull, axis1_x, axis1_y, min1, max1);
-            project_points_onto_axis(hull, axis2_x, axis2_y, min2, max2);
+            project_points_onto_axis(scratch->hull_points, axis1_x, axis1_y, min1, max1);
+            project_points_onto_axis(scratch->hull_points, axis2_x, axis2_y, min2, max2);
 
             float rect_width = max1 - min1;
             float rect_height = max2 - min2;
@@ -368,29 +388,27 @@ namespace ppocrv5::postprocess {
         return best_rect;
     }
 
-    std::vector<RotatedRect> FilterAndSortBoxes(
+    void FilterAndSortBoxes(
             const std::vector<RotatedRect> &boxes,
-            float min_confidence, float min_area) {
-        std::vector<RotatedRect> filtered;
-        filtered.reserve(boxes.size());
+            float min_confidence, float min_area,
+            std::vector<RotatedRect> *out) {
+        out->clear();
+        out->reserve(boxes.size());
 
         for (const auto &box: boxes) {
             float area = box.width * box.height;
             if (box.confidence >= min_confidence && area >= min_area) {
-                filtered.push_back(box);
+                out->push_back(box);
             }
         }
 
-        std::sort(filtered.begin(), filtered.end(), [](const RotatedRect &a, const RotatedRect &b) {
+        std::sort(out->begin(), out->end(), [](const RotatedRect &a, const RotatedRect &b) {
             constexpr float kLineThreshold = 20.0f;
             if (std::abs(a.center_y - b.center_y) < kLineThreshold) {
                 return a.center_x < b.center_x;
             }
             return a.center_y < b.center_y;
         });
-
-        return filtered;
     }
 
 } // namespace ppocrv5::postprocess
-
