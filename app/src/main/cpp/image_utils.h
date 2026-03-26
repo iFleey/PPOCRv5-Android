@@ -21,8 +21,20 @@
 
 namespace ppocrv5::image_utils {
 
+    struct LetterboxInfo {
+        float scale = 1.0f;
+        int resized_w = 0;
+        int resized_h = 0;
+        int pad_x = 0;
+        int pad_y = 0;
+    };
+
     void ResizeBilinear(const uint8_t *src, int src_w, int src_h, int src_stride,
                         uint8_t *dst, int dst_w, int dst_h);
+
+    void LetterboxResize(const uint8_t *src, int src_w, int src_h, int src_stride,
+                         uint8_t *dst, int dst_w, int dst_h, LetterboxInfo *info,
+                         uint8_t pad_value = 114);
 
     void NormalizeImageNet(const uint8_t *src, int w, int h, int stride, float *dst);
 

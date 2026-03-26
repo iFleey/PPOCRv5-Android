@@ -181,6 +181,20 @@ namespace ppocrv5 {
 
 #endif
 
+        inline float SoftmaxProbabilityScalar(const float *__restrict__ logits, int size, int target_idx) {
+            float max_val = logits[0];
+            for (int i = 1; i < size; ++i) {
+                max_val = std::max(max_val, logits[i]);
+            }
+
+            float sum = 0.0f;
+            for (int i = 0; i < size; ++i) {
+                sum += std::exp(logits[i] - max_val);
+            }
+
+            return std::exp(logits[target_idx] - max_val) / std::max(sum, 1e-8f);
+        }
+
 #if USE_NEON
 
         inline void BilinearSampleNeon(const uint8_t *__restrict__ src, int stride,
@@ -614,7 +628,11 @@ namespace ppocrv5 {
                 const int dict_idx = max_index - 1;
                 if (dict_idx >= 0 && dict_idx < dict_size) {
                     result += dictionary_[dict_idx];
-                    total_confidence += max_value;
+#if USE_NEON
+                    total_confidence += SoftmaxMaxNeon(step_logits, num_classes_, max_index);
+#else
+                    total_confidence += SoftmaxProbabilityScalar(step_logits, num_classes_, max_index);
+#endif
                     ++char_count;
                 }
             }

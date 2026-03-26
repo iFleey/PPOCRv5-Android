@@ -90,8 +90,7 @@ namespace ppocrv5 {
         std::vector<litert::TensorBuffer> input_buffers_;
         std::vector<litert::TensorBuffer> output_buffers_;
 
-        float scale_x_ = 1.0f;
-        float scale_y_ = 1.0f;
+        image_utils::LetterboxInfo letterbox_info_;
 
         // Pre-allocated buffers with cache-line alignment
         alignas(64) std::vector<uint8_t> resized_buffer_;
@@ -265,11 +264,9 @@ namespace ppocrv5 {
                                         float *detection_time_ms) {
             auto start_time = std::chrono::high_resolution_clock::now();
 
-            scale_x_ = static_cast<float>(width) / kDetInputSize;
-            scale_y_ = static_cast<float>(height) / kDetInputSize;
-
-            image_utils::ResizeBilinear(image_data, width, height, stride,
-                                        resized_buffer_.data(), kDetInputSize, kDetInputSize);
+            image_utils::LetterboxResize(image_data, width, height, stride,
+                                         resized_buffer_.data(), kDetInputSize, kDetInputSize,
+                                         &letterbox_info_);
 
             if (input_is_quantized_) {
                 PrepareQuantizedInput();
@@ -357,11 +354,16 @@ namespace ppocrv5 {
 
                 UnclipBox(rect, kUnclipRatio);
 
-                rect.center_x *= scale_x_;
-                rect.center_y *= scale_y_;
-                rect.width *= scale_x_;
-                rect.height *= scale_y_;
+                rect.center_x = (rect.center_x - letterbox_info_.pad_x) / letterbox_info_.scale;
+                rect.center_y = (rect.center_y - letterbox_info_.pad_y) / letterbox_info_.scale;
+                rect.width /= letterbox_info_.scale;
+                rect.height /= letterbox_info_.scale;
                 rect.confidence = box_score;
+
+                if (rect.center_x < 0.0f || rect.center_x > width ||
+                    rect.center_y < 0.0f || rect.center_y > height) {
+                    continue;
+                }
 
                 boxes.push_back(rect);
             }
