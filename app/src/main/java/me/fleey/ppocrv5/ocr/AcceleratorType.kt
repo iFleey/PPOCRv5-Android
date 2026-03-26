@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 Fleey
+ * Copyright (C) 2025-2026 Fleey
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,10 +34,18 @@ enum class AcceleratorType(val value: Int) {
   NPU(2);
 
   companion object {
+    val selectableEntries: List<AcceleratorType> = listOf(GPU, CPU)
+
     fun fromValue(value: Int): AcceleratorType = when (value) {
       0 -> GPU
       1 -> CPU
       else -> GPU
+    }
+
+    fun coerceToSelectable(type: AcceleratorType): AcceleratorType = if (type in selectableEntries) {
+      type
+    } else {
+      GPU
     }
   }
 }

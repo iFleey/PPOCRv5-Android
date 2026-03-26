@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 Fleey
+ * Copyright (C) 2025-2026 Fleey
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -67,6 +67,17 @@ namespace ppocrv5 {
         constexpr int kPrefetchDistance = 256;
 
         constexpr float kMinConfidenceThreshold = 0.1f;
+        constexpr float kProbabilityMinTolerance = -1e-3f;
+        constexpr float kProbabilityMaxTolerance = 1.001f;
+        constexpr float kProbabilitySumTolerance = 5e-2f;
+        constexpr float kConfidenceEpsilon = 1e-6f;
+        constexpr int kOutputActivationProbeSteps = 4;
+
+        enum class OutputActivation {
+            kUnknown,
+            kProbabilities,
+            kLogits,
+        };
 
         litert::HwAccelerators ToLiteRtAccelerator(AcceleratorType type) {
             switch (type) {
@@ -181,6 +192,36 @@ namespace ppocrv5 {
 
 #endif
 
+        inline float SoftmaxProbabilityScalar(const float *__restrict__ logits, int size, int target_idx) {
+            float max_val = logits[0];
+            for (int i = 1; i < size; ++i) {
+                max_val = std::max(max_val, logits[i]);
+            }
+
+            float sum = 0.0f;
+            for (int i = 0; i < size; ++i) {
+                sum += std::exp(logits[i] - max_val);
+            }
+
+            return std::exp(logits[target_idx] - max_val) / std::max(sum, 1e-8f);
+        }
+
+        inline bool LooksLikeProbabilityDistribution(const float *__restrict__ values, int size) {
+            float min_val = values[0];
+            float max_val = values[0];
+            float sum = values[0];
+            for (int i = 1; i < size; ++i) {
+                const float value = values[i];
+                min_val = std::min(min_val, value);
+                max_val = std::max(max_val, value);
+                sum += value;
+            }
+
+            return min_val >= kProbabilityMinTolerance &&
+                   max_val <= kProbabilityMaxTolerance &&
+                   std::abs(sum - 1.0f) <= kProbabilitySumTolerance;
+        }
+
 #if USE_NEON
 
         inline void BilinearSampleNeon(const uint8_t *__restrict__ src, int stride,
@@ -276,6 +317,7 @@ namespace ppocrv5 {
         int input_zero_point_ = 0;
         float output_scale_ = 1.0f;
         int output_zero_point_ = 0;
+        OutputActivation output_activation_ = OutputActivation::kUnknown;
 
         int num_classes_ = 0;
         int time_steps_ = 0;
@@ -390,6 +432,45 @@ namespace ppocrv5 {
             return true;
         }
 
+        OutputActivation InferOutputActivation(const float *__restrict__ output) {
+            if (output_activation_ != OutputActivation::kUnknown) {
+                return output_activation_;
+            }
+
+            const int probe_steps = std::min(time_steps_, kOutputActivationProbeSteps);
+            int probability_like_steps = 0;
+
+            for (int probe = 0; probe < probe_steps; ++probe) {
+                const int t = (probe * time_steps_) / std::max(probe_steps, 1);
+                const float *step_values = output + t * num_classes_;
+                if (LooksLikeProbabilityDistribution(step_values, num_classes_)) {
+                    ++probability_like_steps;
+                }
+            }
+
+            output_activation_ = (probability_like_steps * 2 >= probe_steps)
+                                 ? OutputActivation::kProbabilities
+                                 : OutputActivation::kLogits;
+
+            LOGD(TAG, "Recognizer output interpreted as %s",
+                 output_activation_ == OutputActivation::kProbabilities ? "probabilities" : "logits");
+            return output_activation_;
+        }
+
+        float GetStepConfidence(const float *__restrict__ step_values,
+                                int target_idx,
+                                OutputActivation output_activation) const {
+            if (output_activation == OutputActivation::kProbabilities) {
+                return std::clamp(step_values[target_idx], 0.0f, 1.0f);
+            }
+
+#if USE_NEON
+            return SoftmaxMaxNeon(step_values, num_classes_, target_idx);
+#else
+            return SoftmaxProbabilityScalar(step_values, num_classes_, target_idx);
+#endif
+        }
+
         bool CreateBuffersWithCApi() {
             if (!compiled_model_ || !env_) {
                 LOGE(TAG, "CompiledModel or Environment not initialized");
@@ -491,6 +572,24 @@ namespace ppocrv5 {
             target_width = static_cast<int>(kRecInputHeight * aspect_ratio);
             target_width = std::clamp(target_width, 1, kRecInputWidth);
 
+            const int max_x = width - 2;
+            const int max_y = height - 2;
+            float min_corner_x = corners[0];
+            float max_corner_x = corners[0];
+            float min_corner_y = corners[1];
+            float max_corner_y = corners[1];
+            for (int i = 1; i < 4; ++i) {
+                min_corner_x = std::min(min_corner_x, corners[i * 2]);
+                max_corner_x = std::max(max_corner_x, corners[i * 2]);
+                min_corner_y = std::min(min_corner_y, corners[i * 2 + 1]);
+                max_corner_y = std::max(max_corner_y, corners[i * 2 + 1]);
+            }
+            const bool fully_inside_image =
+                    min_corner_x >= 0.0f && max_corner_x < static_cast<float>(max_x) &&
+                    min_corner_y >= 0.0f && max_corner_y < static_cast<float>(max_y);
+            const bool needs_full_clear = !fully_inside_image;
+            const bool needs_row_tail_clear = target_width < kRecInputWidth;
+
             const float x0 = corners[0], y0 = corners[1];
             const float x1 = corners[2], y1 = corners[3];
             const float x3 = corners[6], y3 = corners[7];
@@ -504,30 +603,35 @@ namespace ppocrv5 {
             const float a11 = (y3 - y0) * inv_dst_h;
 
             float *__restrict__ dst = input_buffer_.data();
-            const size_t buffer_size = input_buffer_.size();
+            if (needs_full_clear) {
+                const size_t buffer_size = input_buffer_.size();
 #if USE_NEON
-            const float32x4_t v_zero = vdupq_n_f32(0.0f);
-            size_t i = 0;
-            for (; i + 16 <= buffer_size; i += 16) {
-                vst1q_f32(dst + i, v_zero);
-                vst1q_f32(dst + i + 4, v_zero);
-                vst1q_f32(dst + i + 8, v_zero);
-                vst1q_f32(dst + i + 12, v_zero);
-            }
-            for (; i < buffer_size; ++i) {
-                dst[i] = 0.0f;
-            }
+                const float32x4_t v_zero = vdupq_n_f32(0.0f);
+                size_t i = 0;
+                for (; i + 16 <= buffer_size; i += 16) {
+                    vst1q_f32(dst + i, v_zero);
+                    vst1q_f32(dst + i + 4, v_zero);
+                    vst1q_f32(dst + i + 8, v_zero);
+                    vst1q_f32(dst + i + 12, v_zero);
+                }
+                for (; i < buffer_size; ++i) {
+                    dst[i] = 0.0f;
+                }
 #else
-            std::fill(input_buffer_.begin(), input_buffer_.end(), 0.0f);
+                std::fill(input_buffer_.begin(), input_buffer_.end(), 0.0f);
 #endif
-
-            const int max_x = width - 2;
-            const int max_y = height - 2;
+            }
 
             for (int dy = 0; dy < kRecInputHeight; ++dy) {
                 float *__restrict__ dst_row = dst + dy * kRecInputWidth * 3;
                 const float base_sx = x0 + a01 * dy;
                 const float base_sy = y0 + a11 * dy;
+
+                if (!needs_full_clear && needs_row_tail_clear) {
+                    std::fill(dst_row + target_width * 3,
+                              dst_row + kRecInputWidth * 3,
+                              0.0f);
+                }
 
                 if (dy + 1 < kRecInputHeight) {
                     const float next_sy = y0 + a11 * (dy + 1);
@@ -578,7 +682,8 @@ namespace ppocrv5 {
         std::string CtcDecode(const float *__restrict__ logits, float *confidence) {
             std::string result;
             result.reserve(64);
-            float total_confidence = 0.0f;
+            const OutputActivation output_activation = InferOutputActivation(logits);
+            float total_log_confidence = 0.0f;
             int char_count = 0;
             int prev_index = kBlankIndex;
             const int dict_size = static_cast<int>(dictionary_.size());
@@ -614,13 +719,18 @@ namespace ppocrv5 {
                 const int dict_idx = max_index - 1;
                 if (dict_idx >= 0 && dict_idx < dict_size) {
                     result += dictionary_[dict_idx];
-                    total_confidence += max_value;
+                    const float step_confidence = std::max(
+                            GetStepConfidence(step_logits, max_index, output_activation),
+                            kConfidenceEpsilon);
+                    total_log_confidence += std::log(step_confidence);
                     ++char_count;
                 }
             }
 
             if (confidence) {
-                *confidence = (char_count > 0) ? (total_confidence / char_count) : 0.0f;
+                *confidence = (char_count > 0)
+                              ? std::exp(total_log_confidence / char_count)
+                              : 0.0f;
             }
             return result;
         }

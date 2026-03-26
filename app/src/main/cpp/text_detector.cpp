@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 Fleey
+ * Copyright (C) 2025-2026 Fleey
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -90,14 +90,18 @@ namespace ppocrv5 {
         std::vector<litert::TensorBuffer> input_buffers_;
         std::vector<litert::TensorBuffer> output_buffers_;
 
-        float scale_x_ = 1.0f;
-        float scale_y_ = 1.0f;
+        image_utils::LetterboxInfo letterbox_info_;
 
         // Pre-allocated buffers with cache-line alignment
         alignas(64) std::vector<uint8_t> resized_buffer_;
         alignas(64) std::vector<float> normalized_buffer_;
         alignas(64) std::vector<uint8_t> binary_map_;
         alignas(64) std::vector<float> prob_map_;
+        alignas(64) std::vector<float> box_score_sum_integral_;
+        alignas(64) std::vector<uint32_t> box_score_count_integral_;
+        postprocess::ContourScratch contour_scratch_;
+        std::vector<RotatedRect> boxes_buffer_;
+        std::vector<RotatedRect> filtered_boxes_buffer_;
 
         // Quantization parameters
         bool input_is_int8_ = false;
@@ -191,6 +195,10 @@ namespace ppocrv5 {
             normalized_buffer_.resize(kDetInputSize * kDetInputSize * 3);
             binary_map_.resize(kDetInputSize * kDetInputSize);
             prob_map_.resize(kDetInputSize * kDetInputSize);
+            box_score_sum_integral_.resize((kDetInputSize + 1) * (kDetInputSize + 1));
+            box_score_count_integral_.resize((kDetInputSize + 1) * (kDetInputSize + 1));
+            boxes_buffer_.reserve(128);
+            filtered_boxes_buffer_.reserve(128);
 
             LOGD(TAG, "TextDetector initialized successfully with C++ API");
             return true;
@@ -260,21 +268,21 @@ namespace ppocrv5 {
             return true;
         }
 
-        std::vector<RotatedRect> Detect(const uint8_t *image_data,
-                                        int width, int height, int stride,
-                                        float *detection_time_ms) {
+        const std::vector<RotatedRect> &DetectView(const uint8_t *image_data,
+                                                   int width, int height, int stride,
+                                                   float *detection_time_ms) {
             auto start_time = std::chrono::high_resolution_clock::now();
 
-            scale_x_ = static_cast<float>(width) / kDetInputSize;
-            scale_y_ = static_cast<float>(height) / kDetInputSize;
-
-            image_utils::ResizeBilinear(image_data, width, height, stride,
-                                        resized_buffer_.data(), kDetInputSize, kDetInputSize);
-
             if (input_is_quantized_) {
+                image_utils::LetterboxResize(image_data, width, height, stride,
+                                             resized_buffer_.data(), kDetInputSize, kDetInputSize,
+                                             &letterbox_info_);
                 PrepareQuantizedInput();
             } else {
-                PrepareFloatInput();
+                image_utils::LetterboxResizeNormalizeImageNet(
+                        image_data, width, height, stride,
+                        normalized_buffer_.data(), kDetInputSize, kDetInputSize,
+                        &letterbox_info_);
             }
 
             auto write_result = WriteInputBuffer();
@@ -282,7 +290,8 @@ namespace ppocrv5 {
                 LOGE(TAG, "Failed to write input buffer: %s",
                      write_result.Error().Message().c_str());
                 if (detection_time_ms) *detection_time_ms = 0.0f;
-                return {};
+                filtered_boxes_buffer_.clear();
+                return filtered_boxes_buffer_;
             }
 
             LOGD(TAG, "Running inference with C++ API...");
@@ -291,7 +300,8 @@ namespace ppocrv5 {
                 LOGE(TAG, "Failed to run inference: %s",
                      run_result.Error().Message().c_str());
                 if (detection_time_ms) *detection_time_ms = 0.0f;
-                return {};
+                filtered_boxes_buffer_.clear();
+                return filtered_boxes_buffer_;
             }
 
             auto read_result = ReadOutputBuffer();
@@ -299,12 +309,14 @@ namespace ppocrv5 {
                 LOGE(TAG, "Failed to read output buffer: %s",
                      read_result.Error().Message().c_str());
                 if (detection_time_ms) *detection_time_ms = 0.0f;
-                return {};
+                filtered_boxes_buffer_.clear();
+                return filtered_boxes_buffer_;
             }
 
             const int total_pixels = kDetInputSize * kDetInputSize;
             float *prob_map = prob_map_.data();
 
+#ifndef NDEBUG
             float min_val = prob_map[0], max_val = prob_map[0];
             float sum_val = 0.0f;
             int above_threshold = 0;
@@ -317,60 +329,83 @@ namespace ppocrv5 {
             }
             LOGD(TAG, "Prob map stats: min=%.4f, max=%.4f, mean=%.6f, above_threshold=%d",
                  min_val, max_val, sum_val / total_pixels, above_threshold);
+#endif
 
             BinarizeOutput(prob_map, total_pixels);
+            BuildBoxScoreIntegral(prob_map);
 
+#ifndef NDEBUG
             auto postprocess_start = std::chrono::high_resolution_clock::now();
-            auto contours = postprocess::FindContours(binary_map_.data(),
-                                                      kDetInputSize, kDetInputSize);
-
+#endif
+            postprocess::FindContours(binary_map_.data(),
+                                      kDetInputSize, kDetInputSize,
+                                      &contour_scratch_);
+            const auto &contours = contour_scratch_.contours;
+#ifndef NDEBUG
             auto contours_end = std::chrono::high_resolution_clock::now();
             auto contours_duration = std::chrono::duration_cast<std::chrono::microseconds>(
                     contours_end - postprocess_start);
             LOGD(TAG, "FindContours: %zu contours in %.2f ms",
                  contours.size(), contours_duration.count() / 1000.0f);
+#endif
 
-            std::vector<RotatedRect> boxes;
-            boxes.reserve(contours.size());
+            boxes_buffer_.clear();
+            boxes_buffer_.reserve(contours.size());
 
+#ifndef NDEBUG
             int skipped_small_contour = 0;
             int skipped_small_rect = 0;
             int skipped_low_score = 0;
+#endif
 
             for (const auto &contour: contours) {
-                if (contour.size() < 4) {
+                if (contour.size < 4) {
+#ifndef NDEBUG
                     skipped_small_contour++;
+#endif
                     continue;
                 }
 
-                RotatedRect rect = postprocess::MinAreaRect(contour);
+                RotatedRect rect = postprocess::MinAreaRect(contour, &contour_scratch_);
                 if (rect.width < 1.0f || rect.height < 1.0f) {
+#ifndef NDEBUG
                     skipped_small_rect++;
+#endif
                     continue;
                 }
 
-                float box_score = CalculateBoxScore(contour, prob_map);
+                float box_score = CalculateBoxScore(contour);
                 if (box_score < kBoxThreshold) {
+#ifndef NDEBUG
                     skipped_low_score++;
+#endif
                     continue;
                 }
 
                 UnclipBox(rect, kUnclipRatio);
 
-                rect.center_x *= scale_x_;
-                rect.center_y *= scale_y_;
-                rect.width *= scale_x_;
-                rect.height *= scale_y_;
+                rect.center_x = (rect.center_x - letterbox_info_.pad_x) / letterbox_info_.scale;
+                rect.center_y = (rect.center_y - letterbox_info_.pad_y) / letterbox_info_.scale;
+                rect.width /= letterbox_info_.scale;
+                rect.height /= letterbox_info_.scale;
                 rect.confidence = box_score;
 
-                boxes.push_back(rect);
+                if (rect.center_x < 0.0f || rect.center_x > width ||
+                    rect.center_y < 0.0f || rect.center_y > height) {
+                    continue;
+                }
+
+                boxes_buffer_.push_back(rect);
             }
 
+#ifndef NDEBUG
             LOGD(TAG, "Box filtering: skipped_small_contour=%d, skipped_small_rect=%d, "
                       "skipped_low_score=%d, passed=%zu",
-                 skipped_small_contour, skipped_small_rect, skipped_low_score, boxes.size());
+                 skipped_small_contour, skipped_small_rect, skipped_low_score, boxes_buffer_.size());
+#endif
 
-            auto filtered_boxes = postprocess::FilterAndSortBoxes(boxes, kBoxThreshold, kMinBoxArea);
+            postprocess::FilterAndSortBoxes(boxes_buffer_, kBoxThreshold, kMinBoxArea,
+                                            &filtered_boxes_buffer_);
 
             auto end_time = std::chrono::high_resolution_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -380,9 +415,9 @@ namespace ppocrv5 {
             }
 
             LOGD(TAG, "Detection completed: %zu boxes in %.2f ms",
-                 filtered_boxes.size(), duration.count() / 1000.0f);
+                 filtered_boxes_buffer_.size(), duration.count() / 1000.0f);
 
-            return filtered_boxes;
+            return filtered_boxes_buffer_;
         }
 
     private:
@@ -523,7 +558,9 @@ namespace ppocrv5 {
                     raw_min = std::min(raw_min, prob_map[i]);
                     raw_max = std::max(raw_max, prob_map[i]);
                 }
+#ifndef NDEBUG
                 LOGD(TAG, "Raw FLOAT32 output range: min=%.4f, max=%.4f", raw_min, raw_max);
+#endif
 
                 bool need_sigmoid = (raw_min < -0.5f || raw_max > 1.5f);
                 if (need_sigmoid) {
@@ -598,41 +635,74 @@ namespace ppocrv5 {
             }
 #endif
 
+#ifndef NDEBUG
             int binary_nonzero = 0;
             for (int i = 0; i < total_pixels; ++i) {
                 if (binary_map_[i] > 0) binary_nonzero++;
             }
             LOGD(TAG, "Binary map non-zero pixels: %d", binary_nonzero);
+#endif
         }
 
-        float CalculateBoxScore(const std::vector<postprocess::Point> &contour,
-                                const float *prob_map) {
-            float min_x = contour[0].x, max_x = contour[0].x;
-            float min_y = contour[0].y, max_y = contour[0].y;
-            for (const auto &pt: contour) {
-                min_x = std::min(min_x, pt.x);
-                max_x = std::max(max_x, pt.x);
-                min_y = std::min(min_y, pt.y);
-                max_y = std::max(max_y, pt.y);
-            }
+        void BuildBoxScoreIntegral(const float *prob_map) {
+            constexpr int kIntegralStride = kDetInputSize + 1;
 
-            int x_start = std::max(0, static_cast<int>(min_x));
-            int x_end = std::min(kDetInputSize - 1, static_cast<int>(max_x));
-            int y_start = std::max(0, static_cast<int>(min_y));
-            int y_end = std::min(kDetInputSize - 1, static_cast<int>(max_y));
+            std::fill_n(box_score_sum_integral_.data(), kIntegralStride, 0.0f);
+            std::fill_n(box_score_count_integral_.data(), kIntegralStride, 0u);
 
-            float box_score = 0.0f;
-            int count = 0;
-            for (int py = y_start; py <= y_end; ++py) {
-                for (int px = x_start; px <= x_end; ++px) {
-                    if (binary_map_[py * kDetInputSize + px] > 0) {
-                        box_score += prob_map[py * kDetInputSize + px];
-                        ++count;
-                    }
+            for (int y = 0; y < kDetInputSize; ++y) {
+                const size_t src_row_offset = static_cast<size_t>(y) * kDetInputSize;
+                const uint8_t *binary_row = binary_map_.data() + src_row_offset;
+                const float *prob_row = prob_map + src_row_offset;
+
+                const size_t prev_row_offset = static_cast<size_t>(y) * kIntegralStride;
+                const size_t dst_row_offset = static_cast<size_t>(y + 1) * kIntegralStride;
+                box_score_sum_integral_[dst_row_offset] = 0.0f;
+                box_score_count_integral_[dst_row_offset] = 0u;
+
+                float row_sum = 0.0f;
+                uint32_t row_count = 0;
+                for (int x = 0; x < kDetInputSize; ++x) {
+                    const uint32_t mask = binary_row[x] > 0 ? 1u : 0u;
+                    row_sum += mask ? prob_row[x] : 0.0f;
+                    row_count += mask;
+                    box_score_sum_integral_[dst_row_offset + x + 1] =
+                            box_score_sum_integral_[prev_row_offset + x + 1] + row_sum;
+                    box_score_count_integral_[dst_row_offset + x + 1] =
+                            box_score_count_integral_[prev_row_offset + x + 1] + row_count;
                 }
             }
+        }
 
-            return (count > 0) ? (box_score / count) : 0.0f;
+        float CalculateBoxScore(const postprocess::ContourRange &contour) const {
+            int x_start = std::max(0, static_cast<int>(contour.min_x));
+            int x_end = std::min(kDetInputSize - 1, static_cast<int>(contour.max_x));
+            int y_start = std::max(0, static_cast<int>(contour.min_y));
+            int y_end = std::min(kDetInputSize - 1, static_cast<int>(contour.max_y));
+
+            if (x_start > x_end || y_start > y_end) {
+                return 0.0f;
+            }
+
+            constexpr int kIntegralStride = kDetInputSize + 1;
+            const int x0 = x_start;
+            const int y0 = y_start;
+            const int x1 = x_end + 1;
+            const int y1 = y_end + 1;
+
+            const size_t top_left = static_cast<size_t>(y0) * kIntegralStride + x0;
+            const size_t top_right = static_cast<size_t>(y0) * kIntegralStride + x1;
+            const size_t bottom_left = static_cast<size_t>(y1) * kIntegralStride + x0;
+            const size_t bottom_right = static_cast<size_t>(y1) * kIntegralStride + x1;
+
+            const float score_sum =
+                    box_score_sum_integral_[bottom_right] - box_score_sum_integral_[bottom_left] -
+                    box_score_sum_integral_[top_right] + box_score_sum_integral_[top_left];
+            const uint32_t count =
+                    box_score_count_integral_[bottom_right] - box_score_count_integral_[bottom_left] -
+                    box_score_count_integral_[top_right] + box_score_count_integral_[top_left];
+
+            return (count > 0) ? (score_sum / static_cast<float>(count)) : 0.0f;
         }
     };
 
@@ -652,16 +722,23 @@ namespace ppocrv5 {
         return detector;
     }
 
-    std::vector<RotatedRect> TextDetector::Detect(const uint8_t *image_data,
-                                                  int width, int height, int stride,
-                                                  float *detection_time_ms) {
+    const std::vector<RotatedRect> &TextDetector::DetectView(const uint8_t *image_data,
+                                                             int width, int height, int stride,
+                                                             float *detection_time_ms) {
         if (!impl_) {
             LOGE(TAG, "TextDetector not initialized");
             if (detection_time_ms) *detection_time_ms = 0.0f;
-            return {};
+            static const std::vector<RotatedRect> kEmpty;
+            return kEmpty;
         }
 
-        return impl_->Detect(image_data, width, height, stride, detection_time_ms);
+        return impl_->DetectView(image_data, width, height, stride, detection_time_ms);
+    }
+
+    std::vector<RotatedRect> TextDetector::Detect(const uint8_t *image_data,
+                                                  int width, int height, int stride,
+                                                  float *detection_time_ms) {
+        return DetectView(image_data, width, height, stride, detection_time_ms);
     }
 
 }  // namespace ppocrv5

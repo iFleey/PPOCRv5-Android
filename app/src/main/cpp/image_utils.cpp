@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 Fleey
+ * Copyright (C) 2025-2026 Fleey
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -237,6 +237,139 @@ namespace ppocrv5::image_utils {
                 }
                 out[3] = 255;
             }
+        }
+    }
+
+    void LetterboxResize(const uint8_t *src, int src_w, int src_h, int src_stride,
+                         uint8_t *dst, int dst_w, int dst_h, LetterboxInfo *info,
+                         uint8_t pad_value) {
+        const float scale = std::min(
+                static_cast<float>(dst_w) / std::max(src_w, 1),
+                static_cast<float>(dst_h) / std::max(src_h, 1));
+
+        const int resized_w = std::max(1, static_cast<int>(std::round(src_w * scale)));
+        const int resized_h = std::max(1, static_cast<int>(std::round(src_h * scale)));
+        const int pad_x = (dst_w - resized_w) / 2;
+        const int pad_y = (dst_h - resized_h) / 2;
+
+        for (int y = 0; y < dst_h; ++y) {
+            uint8_t *dst_row = dst + y * dst_w * 4;
+            for (int x = 0; x < dst_w; ++x) {
+                dst_row[x * 4 + 0] = pad_value;
+                dst_row[x * 4 + 1] = pad_value;
+                dst_row[x * 4 + 2] = pad_value;
+                dst_row[x * 4 + 3] = 255;
+            }
+        }
+
+        const float scale_x = static_cast<float>(src_w) / resized_w;
+        const float scale_y = static_cast<float>(src_h) / resized_h;
+
+        for (int y = 0; y < resized_h; ++y) {
+            float src_y = Clamp((y + 0.5f) * scale_y - 0.5f, 0.f, src_h - 1.f);
+            int y0 = static_cast<int>(src_y);
+            int y1 = std::min(y0 + 1, src_h - 1);
+            float dy = src_y - y0;
+
+            const uint8_t *row0 = src + y0 * src_stride;
+            const uint8_t *row1 = src + y1 * src_stride;
+            uint8_t *dst_row = dst + ((y + pad_y) * dst_w + pad_x) * 4;
+
+            for (int x = 0; x < resized_w; ++x) {
+                float src_x = Clamp((x + 0.5f) * scale_x - 0.5f, 0.f, src_w - 1.f);
+                int x0 = static_cast<int>(src_x);
+                int x1 = std::min(x0 + 1, src_w - 1);
+                float dx = src_x - x0;
+
+                float w00 = (1.0f - dx) * (1.0f - dy);
+                float w01 = dx * (1.0f - dy);
+                float w10 = (1.0f - dx) * dy;
+                float w11 = dx * dy;
+
+                uint8_t *out = dst_row + x * 4;
+                for (int c = 0; c < 3; ++c) {
+                    float v = row0[x0 * 4 + c] * w00 + row0[x1 * 4 + c] * w01 +
+                              row1[x0 * 4 + c] * w10 + row1[x1 * 4 + c] * w11;
+                    out[c] = static_cast<uint8_t>(Clamp(v, 0.f, 255.f));
+                }
+                out[3] = 255;
+            }
+        }
+
+        if (info != nullptr) {
+            info->scale = scale;
+            info->resized_w = resized_w;
+            info->resized_h = resized_h;
+            info->pad_x = pad_x;
+            info->pad_y = pad_y;
+        }
+    }
+
+    void LetterboxResizeNormalizeImageNet(const uint8_t *src, int src_w, int src_h, int src_stride,
+                                          float *dst, int dst_w, int dst_h, LetterboxInfo *info,
+                                          uint8_t pad_value) {
+        const float scale = std::min(
+                static_cast<float>(dst_w) / std::max(src_w, 1),
+                static_cast<float>(dst_h) / std::max(src_h, 1));
+
+        const int resized_w = std::max(1, static_cast<int>(std::round(src_w * scale)));
+        const int resized_h = std::max(1, static_cast<int>(std::round(src_h * scale)));
+        const int pad_x = (dst_w - resized_w) / 2;
+        const int pad_y = (dst_h - resized_h) / 2;
+
+        const float pad_r = (pad_value - kDetMean[0]) * kDetStd[0];
+        const float pad_g = (pad_value - kDetMean[1]) * kDetStd[1];
+        const float pad_b = (pad_value - kDetMean[2]) * kDetStd[2];
+
+        for (int y = 0; y < dst_h; ++y) {
+            float *dst_row = dst + static_cast<size_t>(y) * dst_w * 3;
+            for (int x = 0; x < dst_w; ++x) {
+                const int di = x * 3;
+                dst_row[di + 0] = pad_r;
+                dst_row[di + 1] = pad_g;
+                dst_row[di + 2] = pad_b;
+            }
+        }
+
+        const float scale_x = static_cast<float>(src_w) / resized_w;
+        const float scale_y = static_cast<float>(src_h) / resized_h;
+
+        for (int y = 0; y < resized_h; ++y) {
+            const float src_y = Clamp((y + 0.5f) * scale_y - 0.5f, 0.f, src_h - 1.f);
+            const int y0 = static_cast<int>(src_y);
+            const int y1 = std::min(y0 + 1, src_h - 1);
+            const float dy = src_y - y0;
+
+            const uint8_t *row0 = src + y0 * src_stride;
+            const uint8_t *row1 = src + y1 * src_stride;
+            float *dst_row = dst + (static_cast<size_t>(y + pad_y) * dst_w + pad_x) * 3;
+
+            for (int x = 0; x < resized_w; ++x) {
+                const float src_x = Clamp((x + 0.5f) * scale_x - 0.5f, 0.f, src_w - 1.f);
+                const int x0 = static_cast<int>(src_x);
+                const int x1 = std::min(x0 + 1, src_w - 1);
+                const float dx = src_x - x0;
+
+                const float w00 = (1.0f - dx) * (1.0f - dy);
+                const float w01 = dx * (1.0f - dy);
+                const float w10 = (1.0f - dx) * dy;
+                const float w11 = dx * dy;
+
+                const int dst_index = x * 3;
+                for (int c = 0; c < 3; ++c) {
+                    const float value = row0[x0 * 4 + c] * w00 + row0[x1 * 4 + c] * w01 +
+                                        row1[x0 * 4 + c] * w10 + row1[x1 * 4 + c] * w11;
+                    dst_row[dst_index + c] = (value - kDetMean[c]) * kDetStd[c];
+                }
+            }
+        }
+
+        if (info != nullptr) {
+            info->scale = scale;
+            info->resized_w = resized_w;
+            info->resized_h = resized_h;
+            info->pad_x = pad_x;
+            info->pad_y = pad_y;
         }
     }
 

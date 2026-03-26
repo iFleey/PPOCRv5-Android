@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 Fleey
+ * Copyright (C) 2025-2026 Fleey
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,6 +39,10 @@ namespace ppocrv5 {
         static std::unique_ptr<TextDetector> Create(
                 const std::string &model_path,
                 AcceleratorType accelerator_type);
+
+        const std::vector<RotatedRect> &DetectView(const uint8_t *image_data,
+                                                   int width, int height, int stride,
+                                                   float *detection_time_ms);
 
         std::vector<RotatedRect> Detect(const uint8_t *image_data,
                                         int width, int height, int stride,

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 Fleey
+ * Copyright (C) 2025-2026 Fleey
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -194,13 +194,12 @@ private fun BenchmarkHeader(
   }
 }
 
-@Suppress("DEPRECATION")
 @Composable
 private fun AcceleratorBadge(acceleratorType: AcceleratorType) {
-  val (color, labelRes) = when (acceleratorType) {
-    AcceleratorType.NPU -> NpuColor to R.string.accelerator_npu
-    AcceleratorType.GPU -> GpuColor to R.string.accelerator_gpu
-    AcceleratorType.CPU -> CpuColor to R.string.accelerator_cpu
+  val (color, labelRes) = when (acceleratorType.value) {
+    2 -> NpuColor to R.string.accelerator_npu
+    AcceleratorType.CPU.value -> CpuColor to R.string.accelerator_cpu
+    else -> GpuColor to R.string.accelerator_gpu
   }
 
   Card(

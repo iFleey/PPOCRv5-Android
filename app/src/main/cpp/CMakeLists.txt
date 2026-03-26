@@ -47,9 +47,6 @@ add_compile_definitions(
 # LiteRT SDK (prebuilt libraries)
 add_subdirectory("litert_cc_sdk" "litert_cc_sdk/build")
 
-# Include directories
-include_directories("${CMAKE_CURRENT_SOURCE_DIR}/litert_cc_sdk/include")
-
 # LiteRT C++ wrapper sources
 # Use simplified local implementations for options and tensor_buffer_types
 # to avoid linking issues with unsupported functions in prebuilt library
@@ -82,6 +79,15 @@ add_library(ppocrv5_jni SHARED
         image_utils.cpp
         postprocess.cpp
         ${LITERT_CC_SOURCES}
+)
+
+target_include_directories(ppocrv5_jni
+        SYSTEM PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/litert_cc_sdk/include"
+)
+
+set_source_files_properties(${LITERT_CC_SOURCES}
+        PROPERTIES COMPILE_OPTIONS "-w"
 )
 
 target_link_libraries(ppocrv5_jni

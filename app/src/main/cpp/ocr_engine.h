@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 Fleey
+ * Copyright (C) 2025-2026 Fleey
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 #ifndef PPOCRV5_OCR_ENGINE_H
 #define PPOCRV5_OCR_ENGINE_H
 
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <vector>
@@ -57,6 +58,9 @@ namespace ppocrv5 {
                 const std::string &keys_path,
                 AcceleratorType accelerator_type);
 
+        const std::vector<OcrResult> &ProcessView(const uint8_t *image_data,
+                                                  int width, int height, int stride);
+
         std::vector<OcrResult> Process(const uint8_t *image_data,
                                        int width, int height, int stride);
 
@@ -71,6 +75,11 @@ namespace ppocrv5 {
 
         std::unique_ptr<TextDetector> detector_;
         std::unique_ptr<TextRecognizer> recognizer_;
+        std::vector<uint8_t> upscale_buffer_;
+        std::vector<RotatedRect> filtered_boxes_buffer_;
+        std::vector<size_t> sorted_indices_buffer_;
+        std::vector<size_t> recognition_order_buffer_;
+        std::vector<OcrResult> results_buffer_;
         Benchmark benchmark_;
         AcceleratorType active_accelerator_ = AcceleratorType::kCpu;
     };

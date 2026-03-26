@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 Fleey
+ * Copyright (C) 2025-2026 Fleey
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,9 +18,7 @@ package me.fleey.ppocrv5.data
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.graphics.BitmapFactory
 import android.util.Log
-import androidx.core.net.toUri
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -30,17 +28,16 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import me.fleey.ppocrv5.ocr.OcrEngine
 import me.fleey.ppocrv5.ui.model.GalleryImage
 import java.util.LinkedList
 
-class OcrProcessingManager private constructor(private val context: Context) {
+class OcrProcessingManager private constructor(context: Context) {
 
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
   private val repository = GalleryRepository.getInstance(context)
+  private val ocrService = GalleryOcrService.getInstance(context)
   private val queue = LinkedList<String>()
   private val mutex = Mutex()
-  private var ocrEngine: OcrEngine? = null
   private var isProcessing = false
 
   private val _processingState = MutableStateFlow<ProcessingState>(ProcessingState.Idle)
@@ -99,20 +96,8 @@ class OcrProcessingManager private constructor(private val context: Context) {
 
   private suspend fun processImage(image: GalleryImage) {
     try {
-      val uri = image.uri.toUri()
-      val bitmap = context.contentResolver.openInputStream(uri)?.use { input ->
-        BitmapFactory.decodeStream(input)
-      } ?: return
-
-      if (ocrEngine == null) {
-        ocrEngine = OcrEngine.create(context).getOrNull()
-      }
-
-      val engine = ocrEngine ?: return
-      val results = engine.process(bitmap)
-      repository.updateImageOcr(image.id, results)
-
-      Log.d(TAG, "Processed image ${image.id}: ${results.size} results")
+      val processed = ocrService.getOrProcess(image)
+      Log.d(TAG, "Processed image ${image.id}: ${processed.results.size} results")
     } catch (e: Exception) {
       Log.e(TAG, "Error processing image ${image.id}", e)
     }
