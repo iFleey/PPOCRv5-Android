@@ -20,8 +20,6 @@ import android.app.Application
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.graphics.BitmapFactory
-import androidx.core.net.toUri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -31,21 +29,20 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import me.fleey.ppocrv5.data.GalleryOcrService
 import me.fleey.ppocrv5.data.GalleryRepository
-import me.fleey.ppocrv5.ocr.OcrEngine
 import me.fleey.ppocrv5.ocr.OcrResult
 import me.fleey.ppocrv5.ui.model.GalleryImage
 import me.fleey.ppocrv5.ui.state.ImageViewerUiState
 import me.fleey.ppocrv5.ui.state.TextCopiedEvent
-import java.io.Closeable
 
-class ImageViewerViewModel(application: Application) : AndroidViewModel(application), Closeable {
+class ImageViewerViewModel(application: Application) : AndroidViewModel(application) {
 
   private val _uiState = MutableStateFlow(ImageViewerUiState())
   val uiState: StateFlow<ImageViewerUiState> = _uiState.asStateFlow()
 
-  private var ocrEngine: OcrEngine? = null
   private val repository = GalleryRepository.getInstance(application)
+  private val ocrService = GalleryOcrService.getInstance(application)
   private val ocrCache = mutableMapOf<String, Pair<List<OcrResult>, Pair<Int, Int>>>()
 
   fun initialize(imageId: String) {
@@ -91,16 +88,16 @@ class ImageViewerViewModel(application: Application) : AndroidViewModel(applicat
   private suspend fun loadOcrForImage(image: GalleryImage) {
     val cachedResults = repository.getCachedOcrResults(image)
 
-    if (cachedResults != null && cachedResults.isNotEmpty()) {
-      val dimensions = loadImageDimensions(image.uri)
-      ocrCache[image.id] = cachedResults to dimensions
+    if (cachedResults != null) {
+      val cachedData = ocrService.getOrProcess(image)
+      ocrCache[image.id] = cachedData.results to (cachedData.width to cachedData.height)
       if (_uiState.value.currentImage?.id == image.id) {
         _uiState.update {
           it.copy(
             isProcessing = false,
-            ocrResults = cachedResults,
-            imageWidth = dimensions.first,
-            imageHeight = dimensions.second,
+            ocrResults = cachedData.results,
+            imageWidth = cachedData.width,
+            imageHeight = cachedData.height,
           )
         }
       }
@@ -109,36 +106,20 @@ class ImageViewerViewModel(application: Application) : AndroidViewModel(applicat
 
     val result = withContext(Dispatchers.IO) {
       runCatching {
-        val context = getApplication<Application>()
-        val uri = image.uri.toUri()
-
-        val bitmap = context.contentResolver.openInputStream(uri)?.use { input ->
-          BitmapFactory.decodeStream(input)
-        } ?: throw IllegalStateException("Failed to load image")
-
-        val dimensions = bitmap.width to bitmap.height
-
-        if (ocrEngine == null) {
-          ocrEngine = OcrEngine.create(context).getOrThrow()
-        }
-
-        val results = ocrEngine?.process(bitmap) ?: emptyList()
-        repository.updateImageOcr(image.id, results)
-
-        Triple(results, dimensions.first, dimensions.second)
+        ocrService.getOrProcess(image)
       }
     }
 
     result.fold(
-      onSuccess = { (results, width, height) ->
-        ocrCache[image.id] = results to (width to height)
+      onSuccess = { processed ->
+        ocrCache[image.id] = processed.results to (processed.width to processed.height)
         if (_uiState.value.currentImage?.id == image.id) {
           _uiState.update {
             it.copy(
               isProcessing = false,
-              ocrResults = results,
-              imageWidth = width,
-              imageHeight = height,
+              ocrResults = processed.results,
+              imageWidth = processed.width,
+              imageHeight = processed.height,
             )
           }
         }
@@ -154,20 +135,6 @@ class ImageViewerViewModel(application: Application) : AndroidViewModel(applicat
         }
       },
     )
-  }
-
-  private suspend fun loadImageDimensions(imageUri: String): Pair<Int, Int> {
-    return withContext(Dispatchers.IO) {
-      runCatching {
-        val context = getApplication<Application>()
-        val uri = imageUri.toUri()
-        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        context.contentResolver.openInputStream(uri)?.use { input ->
-          BitmapFactory.decodeStream(input, null, options)
-        }
-        options.outWidth to options.outHeight
-      }.getOrDefault(0 to 0)
-    }
   }
 
   fun copyAllText() {
@@ -194,15 +161,5 @@ class ImageViewerViewModel(application: Application) : AndroidViewModel(applicat
 
   fun clearCopyEvent() {
     _uiState.update { it.copy(textCopiedEvent = null) }
-  }
-
-  override fun close() {
-    ocrEngine?.close()
-    ocrEngine = null
-  }
-
-  override fun onCleared() {
-    super.onCleared()
-    close()
   }
 }
