@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 Fleey
+ * Copyright (C) 2025-2026 Fleey
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,13 +27,13 @@ object PreferencesManager {
   fun saveAcceleratorType(context: Context, type: AcceleratorType) {
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
       .edit {
-        putInt(KEY_ACCELERATOR_TYPE, type.value)
+        putInt(KEY_ACCELERATOR_TYPE, AcceleratorType.coerceToSelectable(type).value)
       }
   }
 
   fun getAcceleratorType(context: Context): AcceleratorType {
     val value = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
       .getInt(KEY_ACCELERATOR_TYPE, AcceleratorType.GPU.value)
-    return AcceleratorType.fromValue(value)
+    return AcceleratorType.coerceToSelectable(AcceleratorType.fromValue(value))
   }
 }

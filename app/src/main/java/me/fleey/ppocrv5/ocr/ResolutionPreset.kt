@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 Fleey
+ * Copyright (C) 2025-2026 Fleey
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,7 +52,7 @@ enum class ResolutionPreset(
   val megapixels: Float get() = (width * height) / 1_000_000f
 
   companion object {
-    val DEFAULT = RES_320x180
+    val DEFAULT = RES_640x360
 
     fun getByAspectRatio(ratio: AspectRatio): List<ResolutionPreset> = when (ratio) {
       AspectRatio.RATIO_4_3 -> listOf(
@@ -68,6 +68,12 @@ enum class ResolutionPreset(
       AspectRatio.RATIO_1_1 -> listOf(
         RES_240x240, RES_480x480, RES_640x640, RES_720x720, RES_1080x1080,
       )
+    }
+
+    fun recommendedForAspectRatio(ratio: AspectRatio): ResolutionPreset = when (ratio) {
+      AspectRatio.RATIO_4_3 -> RES_640x480
+      AspectRatio.RATIO_16_9 -> RES_640x360
+      AspectRatio.RATIO_1_1 -> RES_480x480
     }
 
     fun getLowLatencyPresets(): List<ResolutionPreset> = listOf(

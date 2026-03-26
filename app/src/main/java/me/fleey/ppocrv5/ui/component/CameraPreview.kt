@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 Fleey
+ * Copyright (C) 2025-2026 Fleey
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ package me.fleey.ppocrv5.ui.component
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.util.Log
+import android.view.Surface
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -88,14 +89,17 @@ fun CameraPreview(
       cameraProviderFuture.addListener(
         {
           val cameraProvider = cameraProviderFuture.get()
+          val targetRotation = previewView.display?.rotation ?: Surface.ROTATION_0
 
           val preview = Preview.Builder()
+            .setTargetRotation(targetRotation)
             .build()
             .also { it.surfaceProvider = previewView.surfaceProvider }
 
           @Suppress("DEPRECATION")
           val imageAnalyzer = ImageAnalysis.Builder()
             .setTargetResolution(currentResolution.value.size)
+            .setTargetRotation(targetRotation)
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
             .build()

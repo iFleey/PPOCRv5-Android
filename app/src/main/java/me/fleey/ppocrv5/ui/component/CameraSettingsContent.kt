@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 Fleey
+ * Copyright (C) 2025-2026 Fleey
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -85,13 +85,13 @@ fun CameraSettingsContent(
     Spacer(modifier = Modifier.height(8.dp))
 
     SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-      AcceleratorType.entries.forEachIndexed { index, type ->
+      AcceleratorType.selectableEntries.forEachIndexed { index, type ->
         SegmentedButton(
           selected = type == currentAccelerator,
           onClick = { onAcceleratorChanged(type) },
           shape = SegmentedButtonDefaults.itemShape(
             index = index,
-            count = AcceleratorType.entries.size,
+            count = AcceleratorType.selectableEntries.size,
           ),
         ) {
           Text(getAcceleratorDisplayName(type))
@@ -116,9 +116,7 @@ fun CameraSettingsContent(
           selected = isSelected,
           onClick = {
             selectedAspectRatio = ratio
-            ResolutionPreset.getByAspectRatio(ratio)
-              .firstOrNull()
-              ?.let { onResolutionChanged(it) }
+            onResolutionChanged(ResolutionPreset.recommendedForAspectRatio(ratio))
           },
           label = { Text(stringResource(ratio.labelRes)) },
           leadingIcon = if (isSelected) {
@@ -173,11 +171,11 @@ fun CameraSettingsContent(
   }
 }
 
+@Suppress("DEPRECATION")
 @Composable
 private fun getAcceleratorDisplayName(type: AcceleratorType): String {
   return when (type) {
-    AcceleratorType.NPU -> stringResource(R.string.accelerator_npu)
-    AcceleratorType.GPU -> stringResource(R.string.accelerator_gpu)
     AcceleratorType.CPU -> stringResource(R.string.accelerator_cpu)
+    else -> stringResource(R.string.accelerator_gpu)
   }
 }

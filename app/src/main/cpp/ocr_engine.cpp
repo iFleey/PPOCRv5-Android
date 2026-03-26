@@ -17,6 +17,7 @@
 #include "ocr_engine.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <numeric>
@@ -31,11 +32,6 @@ namespace ppocrv5 {
 
     namespace {
 
-        constexpr AcceleratorType kFallbackChain[] = {
-                AcceleratorType::kGpu,
-                AcceleratorType::kCpu,
-        };
-        constexpr int kFallbackChainSize = 2;
         constexpr int kWarmupIterations = 3;
         constexpr int kWarmupImageSize = 128;
 
@@ -50,14 +46,21 @@ namespace ppocrv5 {
 
         int GetFallbackStartIndex(AcceleratorType requested) {
             switch (requested) {
-                case AcceleratorType::kGpu:
                 case AcceleratorType::kNpu:
                     return 0;
+                case AcceleratorType::kGpu:
+                    return 1;
                 case AcceleratorType::kCpu:
                 default:
-                    return 1;
+                    return 2;
             }
         }
+
+        constexpr std::array<AcceleratorType, 3> kAcceleratorCandidates = {
+                AcceleratorType::kNpu,
+                AcceleratorType::kGpu,
+                AcceleratorType::kCpu,
+        };
 
         const char *AcceleratorName(AcceleratorType type) {
             switch (type) {
@@ -71,13 +74,24 @@ namespace ppocrv5 {
             }
         }
 
-        inline void SortBoxesByArea(std::vector<RotatedRect> &boxes, std::vector<size_t> &indices) {
+        inline void SortTopBoxesByArea(std::vector<RotatedRect> &boxes,
+                                       std::vector<size_t> &indices,
+                                       size_t limit) {
             indices.resize(boxes.size());
             std::iota(indices.begin(), indices.end(), 0);
 
-            std::sort(indices.begin(), indices.end(), [&boxes](size_t a, size_t b) {
+            auto comparator = [&boxes](size_t a, size_t b) {
                 return boxes[a].width * boxes[a].height > boxes[b].width * boxes[b].height;
-            });
+            };
+
+            if (indices.size() <= limit) {
+                std::sort(indices.begin(), indices.end(), comparator);
+                return;
+            }
+
+            auto middle = indices.begin() + static_cast<std::ptrdiff_t>(limit);
+            std::partial_sort(indices.begin(), middle, indices.end(), comparator);
+            indices.resize(limit);
         }
 
         bool ShouldUseTinyImagePath(int width, int height) {
@@ -94,6 +108,18 @@ namespace ppocrv5 {
             const int factor = static_cast<int>(std::ceil(
                     static_cast<float>(kTinyImageMinProcessingShortSide) / short_side));
             return std::clamp(factor, 1, kTinyImageMaxUpscaleFactor);
+        }
+
+        bool IsEffectivelyFullImageBox(const RotatedRect &box, int width, int height) {
+            const float image_area = static_cast<float>(width * height);
+            if (image_area <= 0.0f) return false;
+
+            const float box_area = box.width * box.height;
+            if (box_area / image_area < 0.8f) return false;
+
+            const float center_dx = std::abs(box.center_x - (width / 2.0f));
+            const float center_dy = std::abs(box.center_y - (height / 2.0f));
+            return center_dx <= width * 0.1f && center_dy <= height * 0.1f;
         }
 
         std::vector<uint8_t> UpscaleImageRgba(const uint8_t *image_data,
@@ -143,8 +169,8 @@ namespace ppocrv5 {
         auto engine = std::unique_ptr<OcrEngine>(new OcrEngine());
         int start_index = GetFallbackStartIndex(accelerator_type);
 
-        for (int i = start_index; i < kFallbackChainSize; ++i) {
-            AcceleratorType current_accelerator = kFallbackChain[i];
+        for (size_t i = start_index; i < kAcceleratorCandidates.size(); ++i) {
+            AcceleratorType current_accelerator = kAcceleratorCandidates[i];
             LOGD(TAG, "Attempting to initialize with %s accelerator",
                  AcceleratorName(current_accelerator));
 
@@ -270,13 +296,12 @@ namespace ppocrv5 {
         }
 
         std::vector<RotatedRect> filtered_boxes;
-        filtered_boxes.reserve(std::min(boxes.size(), static_cast<size_t>(kMaxBoxesPerFrame)));
+        filtered_boxes.reserve(boxes.size());
         const float min_box_area = use_tiny_image_path ? 16.0f : kMinBoxArea;
 
         for (const auto &box: boxes) {
             if (box.width * box.height >= min_box_area) {
                 filtered_boxes.push_back(box);
-                if (filtered_boxes.size() >= kMaxBoxesPerFrame) break;
             }
         }
 
@@ -305,10 +330,28 @@ namespace ppocrv5 {
         }
 
         std::vector<size_t> sorted_indices;
-        SortBoxesByArea(filtered_boxes, sorted_indices);
+        SortTopBoxesByArea(filtered_boxes, sorted_indices, kMaxBoxesPerFrame);
+
+        if (use_tiny_image_path &&
+            has_direct_recognition_candidate &&
+            direct_recognition_result.confidence >= kTinyImageFallbackRecognitionThreshold &&
+            sorted_indices.size() == 1 &&
+            IsEffectivelyFullImageBox(filtered_boxes[sorted_indices.front()], width, height)) {
+            OcrResult result;
+            result.text = std::move(direct_recognition_result.text);
+            result.confidence = direct_recognition_result.confidence;
+            result.box = filtered_boxes[sorted_indices.front()];
+
+            auto total_end = std::chrono::high_resolution_clock::now();
+            benchmark_.recognition_time_ms = direct_recognition_time_ms;
+            benchmark_.total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(
+                    total_end - total_start).count() / 1000.0f;
+            benchmark_.fps = (benchmark_.total_time_ms > 0.0f) ? (1000.0f / benchmark_.total_time_ms) : 0.0f;
+            return {std::move(result)};
+        }
 
         std::vector<OcrResult> results;
-        results.reserve(filtered_boxes.size());
+        results.reserve(sorted_indices.size());
 
         auto rec_start = std::chrono::high_resolution_clock::now();
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 Fleey
+ * Copyright (C) 2025-2026 Fleey
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,9 +18,9 @@ package me.fleey.ppocrv5.ui.screen
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.graphics.get
-import androidx.core.graphics.scale
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -51,22 +51,33 @@ class CameraViewModel : ViewModel() {
   private val isProcessing = AtomicBoolean(false)
   private val engineMutex = Mutex()
   private var galleryRepository: GalleryRepository? = null
+  private val bitmapLock = Any()
   private var lastCapturedBitmap: Bitmap? = null
+  private var pendingFrameBitmap: Bitmap? = null
 
   private var lastFpsTime = 0.0
 
   private var lastFrameHash = 0L
   private var stableFrameCount = 0
+  private var lastSubmittedAtMs = 0L
+  private var processingIntervalMs = DEFAULT_PROCESSING_INTERVAL_MS
 
   private companion object {
-    const val STABILITY_THRESHOLD = 1
+    const val STABILITY_THRESHOLD = 2
     const val HASH_DIFF_THRESHOLD = 3000L
+    const val HASH_GRID_SIZE = 8
+    const val DEFAULT_PROCESSING_INTERVAL_MS = 150L
+    const val MIN_PROCESSING_INTERVAL_MS = 90L
+    const val MAX_PROCESSING_INTERVAL_MS = 280L
+    const val PROCESSING_INTERVAL_HEADROOM = 1.1f
   }
 
   fun initialize(context: Context) {
     galleryRepository = GalleryRepository.getInstance(context)
     viewModelScope.launch {
-      val savedAccelerator = PreferencesManager.getAcceleratorType(context)
+      val savedAccelerator = AcceleratorType.coerceToSelectable(
+        PreferencesManager.getAcceleratorType(context),
+      )
       initializeEngine(context, savedAccelerator)
     }
   }
@@ -76,6 +87,7 @@ class CameraViewModel : ViewModel() {
     acceleratorType: AcceleratorType,
     resolutionPreset: ResolutionPreset = ResolutionPreset.DEFAULT,
   ) {
+    val requestedAccelerator = AcceleratorType.coerceToSelectable(acceleratorType)
     engineMutex.withLock {
       val previousResolution = (_uiState.value as? CameraUiState.Ready)?.resolutionPreset
         ?: resolutionPreset
@@ -89,13 +101,17 @@ class CameraViewModel : ViewModel() {
         ocrEngine?.close()
         ocrEngine = null
 
-        OcrEngine.create(context, acceleratorType)
+        OcrEngine.create(context, requestedAccelerator)
           .onSuccess { engine ->
             ocrEngine = engine
             lastFpsTime = 0.0
+            lastFrameHash = 0L
+            stableFrameCount = 0
+            lastSubmittedAtMs = 0L
+            processingIntervalMs = DEFAULT_PROCESSING_INTERVAL_MS
 
             val activeAccelerator = engine.getActiveAccelerator()
-            if (activeAccelerator != acceleratorType) {
+            if (activeAccelerator != requestedAccelerator) {
               PreferencesManager.saveAcceleratorType(context, activeAccelerator)
             }
             _uiState.value = CameraUiState.Ready(
@@ -112,13 +128,15 @@ class CameraViewModel : ViewModel() {
   }
 
   fun onFrameReceived(bitmap: Bitmap) {
-    val engine = ocrEngine ?: return
+    val engine = ocrEngine ?: run {
+      bitmap.recycleSafely()
+      return
+    }
     val currentState = _uiState.value
-    if (currentState !is CameraUiState.Ready) return
-    if (currentState.frozen) return
-
-    lastCapturedBitmap?.recycle()
-    lastCapturedBitmap = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false)
+    if (currentState !is CameraUiState.Ready || currentState.frozen) {
+      bitmap.recycleSafely()
+      return
+    }
 
     val currentHash = computeFrameHash(bitmap)
     val hashDiff = kotlin.math.abs(currentHash - lastFrameHash)
@@ -126,43 +144,71 @@ class CameraViewModel : ViewModel() {
 
     if (hashDiff > HASH_DIFF_THRESHOLD) {
       stableFrameCount = 0
+      bitmap.recycleSafely()
       return
     }
 
-    if (++stableFrameCount < STABILITY_THRESHOLD) return
-    if (!isProcessing.compareAndSet(false, true)) return
-
-    viewModelScope.launch {
-      processFrame(engine, bitmap)
-      isProcessing.set(false)
+    if (++stableFrameCount < STABILITY_THRESHOLD) {
+      bitmap.recycleSafely()
+      return
     }
+
+    val now = SystemClock.elapsedRealtime()
+    if (now - lastSubmittedAtMs < processingIntervalMs) {
+      bitmap.recycleSafely()
+      return
+    }
+
+    if (!isProcessing.compareAndSet(false, true)) {
+      replacePendingFrame(bitmap)
+      return
+    }
+    lastSubmittedAtMs = now
+
+    launchFrameProcessing(engine, bitmap)
   }
 
   private fun computeFrameHash(bitmap: Bitmap): Long {
-    val scaled = bitmap.scale(8, 8)
+    val maxX = bitmap.width - 1
+    val maxY = bitmap.height - 1
     var hash = 0L
-    for (y in 0 until 8) {
-      for (x in 0 until 8) {
-        val pixel = scaled[x, y]
+    for (y in 0 until HASH_GRID_SIZE) {
+      val sampleY = if (maxY <= 0) 0 else (maxY * y) / (HASH_GRID_SIZE - 1)
+      for (x in 0 until HASH_GRID_SIZE) {
+        val sampleX = if (maxX <= 0) 0 else (maxX * x) / (HASH_GRID_SIZE - 1)
+        val pixel = bitmap[sampleX, sampleY]
         hash += ((android.graphics.Color.red(pixel) +
           android.graphics.Color.green(pixel) +
           android.graphics.Color.blue(pixel)) / 3).toLong()
       }
     }
-    scaled.recycle()
     return hash
   }
 
   private suspend fun processFrame(engine: OcrEngine, bitmap: Bitmap) {
     val currentState = _uiState.value
-    if (currentState !is CameraUiState.Ready) return
+    if (currentState !is CameraUiState.Ready) {
+      bitmap.recycleSafely()
+      return
+    }
 
     withContext(Dispatchers.Default) {
+      var retainBitmap = false
       runCatching {
         if (ocrEngine !== engine) return@withContext
 
         val results = engine.process(bitmap)
         val benchmark = engine.getBenchmark()
+        retainBitmap = true
+        replaceCapturedBitmap(bitmap)
+        processingIntervalMs = benchmark.totalTimeMs
+          .takeIf { it > 0f }
+          ?.let { suggested ->
+            (suggested * PROCESSING_INTERVAL_HEADROOM)
+              .toLong()
+              .coerceIn(MIN_PROCESSING_INTERVAL_MS, MAX_PROCESSING_INTERVAL_MS)
+          }
+          ?: DEFAULT_PROCESSING_INTERVAL_MS
 
         val currentTime = System.nanoTime() / 1_000_000.0
         val instantFps = if (lastFpsTime > 0) {
@@ -190,22 +236,74 @@ class CameraViewModel : ViewModel() {
             state
           }
         }
+      }.onFailure {
+        Log.e("CameraViewModel", "Failed to process frame", it)
+      }.also {
+        if (!retainBitmap) {
+          bitmap.recycleSafely()
+        }
       }
     }
   }
 
+  private fun launchFrameProcessing(engine: OcrEngine, bitmap: Bitmap) {
+    viewModelScope.launch {
+      processFrameLoop(engine, bitmap)
+    }
+  }
+
+  private suspend fun processFrameLoop(engine: OcrEngine, initialBitmap: Bitmap) {
+    var currentBitmap: Bitmap? = initialBitmap
+    while (currentBitmap != null) {
+      processFrame(engine, currentBitmap)
+
+      currentBitmap = takePendingFrame()
+      if (currentBitmap != null) {
+        val currentState = _uiState.value
+        if (currentState is CameraUiState.Ready && !currentState.frozen && ocrEngine === engine) {
+          lastSubmittedAtMs = SystemClock.elapsedRealtime()
+          continue
+        }
+        currentBitmap.recycleSafely()
+        currentBitmap = null
+      }
+
+      isProcessing.set(false)
+
+      val racedBitmap = takePendingFrame()
+      if (racedBitmap == null) {
+        return
+      }
+      if (!isProcessing.compareAndSet(false, true)) {
+        replacePendingFrame(racedBitmap)
+        return
+      }
+
+      val currentState = _uiState.value
+      if (currentState !is CameraUiState.Ready || currentState.frozen || ocrEngine !== engine) {
+        racedBitmap.recycleSafely()
+        isProcessing.set(false)
+        return
+      }
+
+      lastSubmittedAtMs = SystemClock.elapsedRealtime()
+      currentBitmap = racedBitmap
+    }
+  }
+
   fun onAcceleratorChanged(context: Context, type: AcceleratorType) {
+    val selectableType = AcceleratorType.coerceToSelectable(type)
     val currentState = _uiState.value
-    if (currentState is CameraUiState.Ready && currentState.acceleratorType == type) {
+    if (currentState is CameraUiState.Ready && currentState.acceleratorType == selectableType) {
       return
     }
 
-    PreferencesManager.saveAcceleratorType(context, type)
+    PreferencesManager.saveAcceleratorType(context, selectableType)
 
     viewModelScope.launch {
       val resolution = (currentState as? CameraUiState.Ready)?.resolutionPreset
         ?: ResolutionPreset.DEFAULT
-      initializeEngine(context, type, resolution)
+      initializeEngine(context, selectableType, resolution)
     }
   }
 
@@ -250,17 +348,17 @@ class CameraViewModel : ViewModel() {
   }
 
   fun capture(): Boolean {
-    val bitmap = lastCapturedBitmap ?: return false
     val repo = galleryRepository ?: return false
 
-    // Check if bitmap is valid
-    if (bitmap.isRecycled) return false
+    val bitmapCopy = synchronized(bitmapLock) {
+      val bitmap = lastCapturedBitmap ?: return false
+      if (bitmap.isRecycled) return false
 
-    // Copy bitmap before async operation since original may be recycled
-    val bitmapCopy = try {
-      bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false)
-    } catch (e: Exception) {
-      return false
+      try {
+        bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false)
+      } catch (e: Exception) {
+        null
+      }
     } ?: return false
 
     _uiState.update { state ->
@@ -299,7 +397,9 @@ class CameraViewModel : ViewModel() {
 
   fun retry(context: Context) {
     viewModelScope.launch {
-      val savedAccelerator = PreferencesManager.getAcceleratorType(context)
+      val savedAccelerator = AcceleratorType.coerceToSelectable(
+        PreferencesManager.getAcceleratorType(context),
+      )
       initializeEngine(context, savedAccelerator)
     }
   }
@@ -308,7 +408,39 @@ class CameraViewModel : ViewModel() {
     super.onCleared()
     ocrEngine?.close()
     ocrEngine = null
-    lastCapturedBitmap?.recycle()
-    lastCapturedBitmap = null
+    synchronized(bitmapLock) {
+      lastCapturedBitmap?.recycleSafely()
+      lastCapturedBitmap = null
+      pendingFrameBitmap?.recycleSafely()
+      pendingFrameBitmap = null
+    }
+  }
+
+  private fun replaceCapturedBitmap(bitmap: Bitmap) {
+    synchronized(bitmapLock) {
+      if (lastCapturedBitmap === bitmap) return
+      lastCapturedBitmap?.recycleSafely()
+      lastCapturedBitmap = bitmap
+    }
+  }
+
+  private fun replacePendingFrame(bitmap: Bitmap) {
+    synchronized(bitmapLock) {
+      if (pendingFrameBitmap === bitmap) return
+      pendingFrameBitmap?.recycleSafely()
+      pendingFrameBitmap = bitmap
+    }
+  }
+
+  private fun takePendingFrame(): Bitmap? = synchronized(bitmapLock) {
+    pendingFrameBitmap.also {
+      pendingFrameBitmap = null
+    }
+  }
+
+  private fun Bitmap.recycleSafely() {
+    if (!isRecycled) {
+      recycle()
+    }
   }
 }
